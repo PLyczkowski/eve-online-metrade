@@ -273,6 +273,10 @@ fn list_opportunities(
     filters: Filters,
 ) -> Result<Vec<Opportunity>, String> {
     let conn = open(&state)?;
+    let cargo_m3 = setting(&conn, "Ship cargo capacity m3", "7900")
+        .parse::<f64>()
+        .unwrap_or(7900.0)
+        .max(0.0);
     let mut stmt = conn
         .prepare(
             "select coalesce(o.status, 'PENDING'),
@@ -287,7 +291,13 @@ fn list_opportunities(
                 o.spread,
                 o.source_available,
                 o.estimated_profit,
-                o.cargo_used_percent,
+                coalesce(
+                    o.cargo_used_percent,
+                    case
+                        when o.source_available is not null and m.volume_m3 is not null and ?1 > 0 and m.volume_m3 > 0
+                        then min(1.0, max(0.0, (o.source_available * m.volume_m3) / ?1))
+                    end
+                ),
                 o.buy_region_volume,
                 o.sell_region_volume,
                 o.last_refresh,
@@ -295,11 +305,12 @@ fn list_opportunities(
                 coalesce(o.script_notes, 'Awaiting ESI validation')
          from products p
          left join opportunities o on o.type_id = p.type_id
+         left join item_metadata m on m.type_id = p.type_id
          where p.enabled = 1",
         )
         .map_err(to_string)?;
     let mut result = rows(
-        stmt.query_map([], opportunity_from_row)
+        stmt.query_map(params![cargo_m3], opportunity_from_row)
             .map_err(to_string)?,
     )?;
     let search = filters.search.trim().to_lowercase();
@@ -1238,12 +1249,12 @@ fn cargo_unit_capacity(cargo_m3: f64, volume_m3: Option<f64>) -> Option<f64> {
     Some((cargo_m3 / volume).floor().max(0.0))
 }
 
-fn cargo_used_percent(cargo_m3: f64, volume_m3: Option<f64>, estimated_units: f64) -> Option<f64> {
+fn cargo_used_percent(cargo_m3: f64, volume_m3: Option<f64>, units_bought: f64) -> Option<f64> {
     let volume = volume_m3?;
     if cargo_m3 <= 0.0 || volume <= 0.0 {
         return None;
     }
-    Some(((estimated_units * volume) / cargo_m3).clamp(0.0, 1.0))
+    Some(((units_bought * volume) / cargo_m3).clamp(0.0, 1.0))
 }
 
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
