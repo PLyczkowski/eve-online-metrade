@@ -481,8 +481,8 @@ fn list_opportunities(
                         case
                             when o.source_available is not null then min(
                                 o.source_available,
-                                coalesce(case when m.volume_m3 is not null and ?1 > 0 and m.volume_m3 > 0 then floor(?1 / m.volume_m3) end, o.source_available),
-                                coalesce(case when o.sell_region_volume is not null and ?2 > 0 then floor(o.sell_region_volume * ?2) end, o.source_available)
+                                coalesce(case when m.volume_m3 is not null and ?1 > 0 and m.volume_m3 > 0 then cast((?1 / m.volume_m3) as integer) end, o.source_available),
+                                coalesce(case when o.sell_region_volume is not null and ?2 > 0 then cast((o.sell_region_volume * ?2) as integer) end, o.source_available)
                             )
                         end
                     ) is not null
@@ -491,8 +491,8 @@ fn list_opportunities(
                         case
                             when o.source_available is not null then min(
                                 o.source_available,
-                                coalesce(case when m.volume_m3 is not null and ?1 > 0 and m.volume_m3 > 0 then floor(?1 / m.volume_m3) end, o.source_available),
-                                coalesce(case when o.sell_region_volume is not null and ?2 > 0 then floor(o.sell_region_volume * ?2) end, o.source_available)
+                                coalesce(case when m.volume_m3 is not null and ?1 > 0 and m.volume_m3 > 0 then cast((?1 / m.volume_m3) as integer) end, o.source_available),
+                                coalesce(case when o.sell_region_volume is not null and ?2 > 0 then cast((o.sell_region_volume * ?2) as integer) end, o.source_available)
                             )
                         end
                     ))
@@ -506,8 +506,8 @@ fn list_opportunities(
                             o.suggested_buy_quantity,
                             min(
                                 o.source_available,
-                                coalesce(floor(?1 / m.volume_m3), o.source_available),
-                                coalesce(case when o.sell_region_volume is not null and ?2 > 0 then floor(o.sell_region_volume * ?2) end, o.source_available)
+                                coalesce(cast((?1 / m.volume_m3) as integer), o.source_available),
+                                coalesce(case when o.sell_region_volume is not null and ?2 > 0 then cast((o.sell_region_volume * ?2) as integer) end, o.source_available)
                             )
                         ) * m.volume_m3) / ?1))
                     end
@@ -517,8 +517,8 @@ fn list_opportunities(
                     case
                         when o.source_available is not null then min(
                             o.source_available,
-                            coalesce(case when m.volume_m3 is not null and ?1 > 0 and m.volume_m3 > 0 then floor(?1 / m.volume_m3) end, o.source_available),
-                            coalesce(case when o.sell_region_volume is not null and ?2 > 0 then floor(o.sell_region_volume * ?2) end, o.source_available)
+                            coalesce(case when m.volume_m3 is not null and ?1 > 0 and m.volume_m3 > 0 then cast((?1 / m.volume_m3) as integer) end, o.source_available),
+                            coalesce(case when o.sell_region_volume is not null and ?2 > 0 then cast((o.sell_region_volume * ?2) as integer) end, o.source_available)
                         )
                     end
                 ),
