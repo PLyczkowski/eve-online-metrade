@@ -1,4 +1,4 @@
-import type { ApiLimitStatus, DiscoveryRun, DiscoverySummary, Filters, Opportunity, Product, RefreshRun, Setting } from "../types";
+import type { ApiLimitStatus, DiscoveryRun, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting } from "../types";
 import { seedOpportunities, seedProducts, seedRefreshRuns, seedSettings } from "../data/seed";
 import { analyzeOpportunity, defaultMarketConfig, shouldSkipLowTargetVolume } from "../domain/market";
 
@@ -9,7 +9,11 @@ type Command =
   | "list_refresh_runs"
   | "list_discovery_summary"
   | "list_api_limit_status"
+  | "get_refresh_status"
   | "discover_hot_products"
+  | "start_refresh_next_batch"
+  | "start_reset_and_refresh"
+  | "start_refresh_product"
   | "refresh_next_batch"
   | "refresh_product"
   | "reset_and_refresh"
@@ -22,6 +26,7 @@ interface StoreShape {
   settings: Setting[];
   opportunities: Opportunity[];
   refreshRuns: RefreshRun[];
+  refreshJob: RefreshJob;
   cursor: number;
 }
 
@@ -58,8 +63,20 @@ export const api = {
   listApiLimitStatus() {
     return call<ApiLimitStatus>("list_api_limit_status");
   },
+  getRefreshStatus() {
+    return call<RefreshJob>("get_refresh_status");
+  },
   discoverHotProducts() {
     return call<DiscoveryRun>("discover_hot_products");
+  },
+  startRefreshNextBatch() {
+    return call<RefreshJob>("start_refresh_next_batch");
+  },
+  startResetAndRefresh() {
+    return call<RefreshJob>("start_reset_and_refresh");
+  },
+  startRefreshProduct(typeId: number) {
+    return call<RefreshJob>("start_refresh_product", { typeId });
   },
   refreshNextBatch() {
     return call<RefreshRun>("refresh_next_batch");
@@ -89,6 +106,7 @@ async function fallbackCommand<T>(command: Command, args?: Record<string, unknow
   if (command === "list_refresh_runs") return store.refreshRuns.slice().reverse() as T;
   if (command === "list_discovery_summary") return fallbackDiscoverySummary(store) as T;
   if (command === "list_api_limit_status") return fallbackApiLimitStatus() as T;
+  if (command === "get_refresh_status") return store.refreshJob as T;
   if (command === "discover_hot_products") return fallbackDiscoverHotProducts(store) as T;
   if (command === "update_product_notes") return updateProductNotes(store, Number(args?.typeId), String(args?.notes ?? "")) as T;
   if (command === "update_setting") return updateSetting(store, String(args?.key), String(args?.value ?? "")) as T;
@@ -96,17 +114,25 @@ async function fallbackCommand<T>(command: Command, args?: Record<string, unknow
   if (command === "refresh_product") return refreshOneFallback(store, Number(args?.typeId)) as T;
   if (command === "refresh_next_batch") return refreshBatchFallback(store, false) as T;
   if (command === "reset_and_refresh") return refreshBatchFallback(store, true) as T;
+  if (command === "start_refresh_product") return startFallbackJob(store, "product", () => refreshOneFallback(store, Number(args?.typeId))) as T;
+  if (command === "start_refresh_next_batch") return startFallbackJob(store, "batch", () => refreshBatchFallback(store, false)) as T;
+  if (command === "start_reset_and_refresh") return startFallbackJob(store, "reset", () => refreshBatchFallback(store, true)) as T;
   throw new Error(`Unknown command: ${command}`);
 }
 
 function readStore(): StoreShape {
   const stored = localStorage.getItem(storeKey);
-  if (stored) return JSON.parse(stored) as StoreShape;
+  if (stored) {
+    const store = JSON.parse(stored) as StoreShape;
+    if (!store.refreshJob) store.refreshJob = idleJob();
+    return store;
+  }
   const store: StoreShape = {
     products: seedProducts,
     settings: seedSettings,
     opportunities: seedOpportunities,
     refreshRuns: seedRefreshRuns,
+    refreshJob: idleJob(),
     cursor: 0
   };
   writeStore(store);
@@ -176,9 +202,53 @@ function fallbackApiLimitStatus(): ApiLimitStatus {
     errorLimitRemain: null,
     errorLimitReset: null,
     retryAfter: null,
+    rateLimitLimit: "",
+    rateLimitRemaining: null,
+    rateLimitUsed: null,
     rateLimited: false,
     lastUrl: ""
   };
+}
+
+function idleJob(): RefreshJob {
+  return {
+    status: "idle",
+    kind: "",
+    currentItem: "",
+    scannedCount: 0,
+    totalCount: 0,
+    apiCalls: 0,
+    lastError: "",
+    startedAt: "",
+    finishedAt: ""
+  };
+}
+
+function startFallbackJob(store: StoreShape, kind: string, action: () => Promise<unknown>): RefreshJob {
+  store.refreshJob = {
+    ...idleJob(),
+    status: "running",
+    kind,
+    startedAt: new Date().toISOString()
+  };
+  writeStore(store);
+  action()
+    .then(() => {
+      const nextStore = readStore();
+      nextStore.refreshJob = { ...nextStore.refreshJob, status: "done", finishedAt: new Date().toISOString() };
+      writeStore(nextStore);
+    })
+    .catch((error) => {
+      const nextStore = readStore();
+      nextStore.refreshJob = {
+        ...nextStore.refreshJob,
+        status: "failed",
+        lastError: (error as Error).message,
+        finishedAt: new Date().toISOString()
+      };
+      writeStore(nextStore);
+    });
+  return store.refreshJob;
 }
 
 function fallbackDiscoverHotProducts(store: StoreShape): DiscoveryRun {

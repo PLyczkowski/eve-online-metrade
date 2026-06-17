@@ -56,6 +56,18 @@ export interface RefreshRun {
   durationSeconds: number;
 }
 
+export interface RefreshJob {
+  status: "idle" | "running" | "done" | "failed";
+  kind: string;
+  currentItem: string;
+  scannedCount: number;
+  totalCount: number;
+  apiCalls: number;
+  lastError: string;
+  startedAt: string;
+  finishedAt: string;
+}
+
 export interface DiscoverySummary {
   knownItems: number;
   marketRows: number;
@@ -81,6 +93,9 @@ export interface ApiLimitStatus {
   errorLimitRemain: number | null;
   errorLimitReset: number | null;
   retryAfter: number | null;
+  rateLimitLimit: string;
+  rateLimitRemaining: number | null;
+  rateLimitUsed: number | null;
   rateLimited: boolean;
   lastUrl: string;
 }

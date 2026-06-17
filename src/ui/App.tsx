@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, DatabaseZap, Play, RefreshCw, RotateCcw, Search, Settings, Square, X } from "lucide-react";
 import { OpportunityTable } from "./OpportunityTable";
 import { api } from "../services/api";
-import type { ApiLimitStatus, DiscoverySummary, Filters, Opportunity, Product, RefreshRun, Setting } from "../types";
+import type { ApiLimitStatus, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting } from "../types";
 
 const emptyFilters: Filters = { search: "", status: "ALL", direction: "ALL" };
 
@@ -11,6 +11,7 @@ export function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [settings, setSettings] = useState<Setting[]>([]);
   const [runs, setRuns] = useState<RefreshRun[]>([]);
+  const [refreshJob, setRefreshJob] = useState<RefreshJob | null>(null);
   const [discovery, setDiscovery] = useState<DiscoverySummary | null>(null);
   const [apiLimit, setApiLimit] = useState<ApiLimitStatus | null>(null);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
@@ -20,15 +21,17 @@ export function App() {
   const [message, setMessage] = useState("Ready");
   const busyRef = useRef(false);
   const intervalEditingRef = useRef(false);
+  const lastJobStatusRef = useRef<string | null>(null);
 
   async function load() {
-    const [opportunityRows, productRows, settingRows, runRows, discoverySummary, apiLimitStatus] = await Promise.all([
+    const [opportunityRows, productRows, settingRows, runRows, discoverySummary, apiLimitStatus, jobStatus] = await Promise.all([
       api.listOpportunities(filters),
       api.listProducts(),
       api.listSettings(),
       api.listRefreshRuns(),
       api.listDiscoverySummary(),
-      api.listApiLimitStatus()
+      api.listApiLimitStatus(),
+      api.getRefreshStatus()
     ]);
     setOpportunities(opportunityRows);
     setProducts(productRows);
@@ -36,6 +39,7 @@ export function App() {
     setRuns(runRows);
     setDiscovery(discoverySummary);
     setApiLimit(apiLimitStatus);
+    setRefreshJob(jobStatus);
     if (!intervalEditingRef.current) {
       setIntervalDraft(settingValue(settingRows, "Automatic refresh interval seconds") || "600");
     }
@@ -54,6 +58,7 @@ export function App() {
   const enabledCount = products.filter((product) => product.enabled).length;
   const automaticEnabled = settingValue(settings, "Automatic refresh enabled") !== "FALSE";
   const automaticIntervalSeconds = Math.max(60, Number(settingValue(settings, "Automatic refresh interval seconds")) || 600);
+  const refreshRunning = refreshJob?.status === "running";
   const apiBurn = useMemo(
     () => estimateApiBurn(runs, automaticIntervalSeconds, Number(settingValue(settings, "Estimated safe ESI calls per hour")) || 1200, apiLimit),
     [runs, automaticIntervalSeconds, settings, apiLimit]
@@ -62,11 +67,35 @@ export function App() {
   useEffect(() => {
     if (!automaticEnabled) return;
     const timer = window.setInterval(() => {
-      if (busyRef.current) return;
-      runAction("Automatic refresh", api.refreshNextBatch);
+      if (busyRef.current || refreshRunning) return;
+      startRefreshJob("Automatic refresh", api.startRefreshNextBatch);
     }, automaticIntervalSeconds * 1000);
     return () => window.clearInterval(timer);
-  }, [automaticEnabled, automaticIntervalSeconds]);
+  }, [automaticEnabled, automaticIntervalSeconds, refreshRunning]);
+
+  useEffect(() => {
+    const timer = window.setInterval(async () => {
+      try {
+        const [jobStatus, apiLimitStatus, runRows] = await Promise.all([
+          api.getRefreshStatus(),
+          api.listApiLimitStatus(),
+          api.listRefreshRuns()
+        ]);
+        setRefreshJob(jobStatus);
+        setApiLimit(apiLimitStatus);
+        setRuns(runRows);
+        const previous = lastJobStatusRef.current;
+        lastJobStatusRef.current = jobStatus.status;
+        if (previous === "running" && jobStatus.status !== "running") {
+          await load();
+          setMessage(jobStatus.status === "failed" ? jobStatus.lastError || "Refresh failed" : "Refresh complete");
+        }
+      } catch (error) {
+        setMessage((error as Error).message);
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [filters.status, filters.direction, filters.search]);
 
   async function runAction(label: string, action: () => Promise<unknown>) {
     if (busyRef.current) return;
@@ -85,8 +114,20 @@ export function App() {
     }
   }
 
+  async function startRefreshJob(label: string, action: () => Promise<RefreshJob>) {
+    if (refreshJob?.status === "running") return;
+    setMessage(`${label} started`);
+    try {
+      const job = await action();
+      setRefreshJob(job);
+      lastJobStatusRef.current = job.status;
+    } catch (error) {
+      setMessage((error as Error).message);
+    }
+  }
+
   async function refreshRow(typeId: number) {
-    await runAction(`Updated ${typeId}`, () => api.refreshProduct(typeId));
+    await startRefreshJob(`Updating ${typeId}`, () => api.startRefreshProduct(typeId));
   }
 
   async function editNotes(typeId: number, current: string) {
@@ -121,10 +162,10 @@ export function App() {
           <p>Jita and Amarr hauling opportunities from public ESI market data.</p>
         </div>
         <div className="topbar-actions">
-          <button className="icon-button text-button" onClick={() => runAction("Refresh next batch", api.refreshNextBatch)} disabled={busy}>
+          <button className="icon-button text-button" onClick={() => startRefreshJob("Refresh next batch", api.startRefreshNextBatch)} disabled={refreshRunning}>
             <Play size={16} /> Refresh next batch
           </button>
-          <button className="icon-button text-button" onClick={() => runAction("Reset refresh", api.resetAndRefresh)} disabled={busy}>
+          <button className="icon-button text-button" onClick={() => startRefreshJob("Reset refresh", api.startResetAndRefresh)} disabled={refreshRunning}>
             <RotateCcw size={16} /> Reset and refresh
           </button>
           <button className="icon-button text-button" onClick={discoverHotProducts} disabled={busy}>
@@ -143,6 +184,7 @@ export function App() {
         <SummaryCard label="Hot candidates" value={discovery ? compactNumber(discovery.candidates) : "0"} />
         <SummaryCard label="Automatic refresh" value={automaticEnabled ? "ON" : "OFF"} icon={automaticEnabled ? <CheckCircle2 size={16} /> : <Square size={16} />} />
         <SummaryCard label="Refresh interval" value={`${automaticIntervalSeconds}s`} />
+        <SummaryCard label="Refresh job" value={refreshRunning ? `${refreshJob.scannedCount}/${refreshJob.totalCount || "?"}` : refreshJob?.status ?? "idle"} />
         <SummaryCard label="Last run" value={latestRun ? latestRun.refreshTime : "None"} />
         <SummaryCard label="API calls" value={latestRun ? latestRun.apiCalls.toString() : "0"} />
       </section>
@@ -217,7 +259,7 @@ export function App() {
       />
 
       <footer className="status-bar">
-        <span>{busy ? "Working" : message}</span>
+        <span>{refreshRunning ? refreshProgressText(refreshJob) : busy ? "Working" : message}</span>
         {latestRun?.errors ? <strong>{latestRun.errors}</strong> : null}
       </footer>
 
@@ -287,6 +329,22 @@ function estimateApiBurn(runs: RefreshRun[], intervalSeconds: number, safeBudget
       detail: `Rate limited; retry after ${apiLimit?.retryAfter ?? apiLimit?.errorLimitReset ?? "?"}s`
     };
   }
+  if (apiLimit?.rateLimitRemaining !== null && apiLimit?.rateLimitRemaining !== undefined) {
+    const used = apiLimit.rateLimitUsed ?? 0;
+    const remaining = apiLimit.rateLimitRemaining;
+    const total = used + remaining;
+    const percent = total > 0 ? (used / total) * 100 : 0;
+    const level = remaining <= Math.max(5, total * 0.15) ? "danger" : remaining <= Math.max(10, total * 0.35) ? "warn" : "ok";
+    const label = level === "danger" ? "Low bucket" : level === "warn" ? "Watch" : "Healthy";
+    return {
+      callsPerHour: 0,
+      percent,
+      safeBudget,
+      level,
+      label,
+      detail: `Bucket remaining: ${remaining}${apiLimit.rateLimitLimit ? ` of ${apiLimit.rateLimitLimit}` : ""}`
+    };
+  }
   if (apiLimit?.errorLimitRemain !== null && apiLimit?.errorLimitRemain !== undefined) {
     const remain = apiLimit.errorLimitRemain;
     const usedPercent = Math.max(0, Math.min(100, ((100 - remain) / 100) * 100));
@@ -331,4 +389,11 @@ function estimateApiBurn(runs: RefreshRun[], intervalSeconds: number, safeBudget
     label,
     detail: `${callsPerHour.toFixed(0)} calls/hour estimate, ${percent.toFixed(0)}% of ${safeBudget}/hour budget`
   };
+}
+
+function refreshProgressText(job: RefreshJob | null): string {
+  if (!job) return "Refreshing...";
+  const total = job.totalCount || "?";
+  const current = job.currentItem ? ` - ${job.currentItem}` : "";
+  return `Refreshing ${job.kind}... ${job.scannedCount}/${total}, ${job.apiCalls} API calls${current}`;
 }

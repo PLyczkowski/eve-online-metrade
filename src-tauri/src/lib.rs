@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::thread;
 use std::time::Duration as StdDuration;
 use tauri::{Manager, State};
 
@@ -73,6 +74,20 @@ struct RefreshRun {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct RefreshJob {
+    status: String,
+    kind: String,
+    current_item: String,
+    scanned_count: i64,
+    total_count: i64,
+    api_calls: i64,
+    last_error: String,
+    started_at: String,
+    finished_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct DiscoverySummary {
     known_items: i64,
     market_rows: i64,
@@ -102,6 +117,9 @@ struct ApiLimitStatus {
     error_limit_remain: Option<i64>,
     error_limit_reset: Option<i64>,
     retry_after: Option<i64>,
+    rate_limit_limit: String,
+    rate_limit_remaining: Option<i64>,
+    rate_limit_used: Option<i64>,
     rate_limited: bool,
     last_url: String,
 }
@@ -150,7 +168,11 @@ pub fn run() {
             list_refresh_runs,
             list_discovery_summary,
             list_api_limit_status,
+            get_refresh_status,
             discover_hot_products,
+            start_refresh_next_batch,
+            start_reset_and_refresh,
+            start_refresh_product,
             refresh_next_batch,
             refresh_product,
             reset_and_refresh,
@@ -165,23 +187,39 @@ pub fn run() {
 #[tauri::command]
 fn list_products(state: State<AppState>) -> Result<Vec<Product>, String> {
     let conn = open(&state)?;
-    let mut stmt = conn.prepare("select type_id, name, enabled, notes from products order by type_id").map_err(to_string)?;
-    let result = rows(stmt.query_map([], |row| {
-        Ok(Product {
-            type_id: row.get(0)?,
-            name: row.get(1)?,
-            enabled: row.get::<_, i64>(2)? != 0,
-            notes: row.get(3)?,
+    let mut stmt = conn
+        .prepare("select type_id, name, enabled, notes from products order by type_id")
+        .map_err(to_string)?;
+    let result = rows(
+        stmt.query_map([], |row| {
+            Ok(Product {
+                type_id: row.get(0)?,
+                name: row.get(1)?,
+                enabled: row.get::<_, i64>(2)? != 0,
+                notes: row.get(3)?,
+            })
         })
-    }).map_err(to_string)?)?;
+        .map_err(to_string)?,
+    )?;
     Ok(result)
 }
 
 #[tauri::command]
 fn list_settings(state: State<AppState>) -> Result<Vec<Setting>, String> {
     let conn = open(&state)?;
-    let mut stmt = conn.prepare("select key, value, notes from settings order by rowid").map_err(to_string)?;
-    let result = rows(stmt.query_map([], |row| Ok(Setting { key: row.get(0)?, value: row.get(1)?, notes: row.get(2)? })).map_err(to_string)?)?;
+    let mut stmt = conn
+        .prepare("select key, value, notes from settings order by rowid")
+        .map_err(to_string)?;
+    let result = rows(
+        stmt.query_map([], |row| {
+            Ok(Setting {
+                key: row.get(0)?,
+                value: row.get(1)?,
+                notes: row.get(2)?,
+            })
+        })
+        .map_err(to_string)?,
+    )?;
     Ok(result)
 }
 
@@ -189,7 +227,10 @@ fn list_settings(state: State<AppState>) -> Result<Vec<Setting>, String> {
 fn list_refresh_runs(state: State<AppState>) -> Result<Vec<RefreshRun>, String> {
     let conn = open(&state)?;
     let mut stmt = conn.prepare("select refresh_time, items_scanned, opportunities_written, api_calls, errors, skipped, duration_seconds from refresh_runs order by rowid desc limit 100").map_err(to_string)?;
-    let result = rows(stmt.query_map([], refresh_run_from_row).map_err(to_string)?)?;
+    let result = rows(
+        stmt.query_map([], refresh_run_from_row)
+            .map_err(to_string)?,
+    )?;
     Ok(result)
 }
 
@@ -206,10 +247,20 @@ fn list_api_limit_status(state: State<AppState>) -> Result<ApiLimitStatus, Strin
 }
 
 #[tauri::command]
-fn list_opportunities(state: State<AppState>, filters: Filters) -> Result<Vec<Opportunity>, String> {
+fn get_refresh_status(state: State<AppState>) -> Result<RefreshJob, String> {
     let conn = open(&state)?;
-    let mut stmt = conn.prepare(
-        "select coalesce(o.status, 'PENDING'),
+    get_refresh_job(&conn)
+}
+
+#[tauri::command]
+fn list_opportunities(
+    state: State<AppState>,
+    filters: Filters,
+) -> Result<Vec<Opportunity>, String> {
+    let conn = open(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "select coalesce(o.status, 'PENDING'),
                 coalesce(o.direction, ''),
                 p.type_id,
                 coalesce(nullif(o.item_name, ''), p.name),
@@ -228,26 +279,45 @@ fn list_opportunities(state: State<AppState>, filters: Filters) -> Result<Vec<Op
                 coalesce(o.script_notes, 'Awaiting ESI validation')
          from products p
          left join opportunities o on o.type_id = p.type_id
-         where p.enabled = 1"
-    ).map_err(to_string)?;
-    let mut result = rows(stmt.query_map([], opportunity_from_row).map_err(to_string)?)?;
+         where p.enabled = 1",
+        )
+        .map_err(to_string)?;
+    let mut result = rows(
+        stmt.query_map([], opportunity_from_row)
+            .map_err(to_string)?,
+    )?;
     let search = filters.search.trim().to_lowercase();
     result.retain(|row| {
         (filters.status == "ALL" || row.status == filters.status)
             && (filters.direction == "ALL" || row.direction == filters.direction)
             && (search.is_empty()
-                || format!("{} {} {} {}", row.type_id, row.item_name, row.notes, row.script_notes)
-                    .to_lowercase()
-                    .contains(&search))
+                || format!(
+                    "{} {} {} {}",
+                    row.type_id, row.item_name, row.notes, row.script_notes
+                )
+                .to_lowercase()
+                .contains(&search))
     });
     Ok(result)
 }
 
 #[tauri::command]
-fn update_product_notes(state: State<AppState>, type_id: i64, notes: String) -> Result<Product, String> {
+fn update_product_notes(
+    state: State<AppState>,
+    type_id: i64,
+    notes: String,
+) -> Result<Product, String> {
     let conn = open(&state)?;
-    conn.execute("update products set notes = ?1 where type_id = ?2", params![notes, type_id]).map_err(to_string)?;
-    conn.execute("update opportunities set notes = ?1 where type_id = ?2", params![notes, type_id]).map_err(to_string)?;
+    conn.execute(
+        "update products set notes = ?1 where type_id = ?2",
+        params![notes, type_id],
+    )
+    .map_err(to_string)?;
+    conn.execute(
+        "update opportunities set notes = ?1 where type_id = ?2",
+        params![notes, type_id],
+    )
+    .map_err(to_string)?;
     get_product(&conn, type_id)
 }
 
@@ -258,16 +328,34 @@ fn update_setting(state: State<AppState>, key: String, value: String) -> Result<
         "insert into settings(key, value, notes) values (?1, ?2, '')
          on conflict(key) do update set value = excluded.value",
         params![key, value],
-    ).map_err(to_string)?;
-    conn.query_row("select key, value, notes from settings where key = ?1", params![key], |row| {
-        Ok(Setting { key: row.get(0)?, value: row.get(1)?, notes: row.get(2)? })
-    }).map_err(to_string)
+    )
+    .map_err(to_string)?;
+    conn.query_row(
+        "select key, value, notes from settings where key = ?1",
+        params![key],
+        |row| {
+            Ok(Setting {
+                key: row.get(0)?,
+                value: row.get(1)?,
+                notes: row.get(2)?,
+            })
+        },
+    )
+    .map_err(to_string)
 }
 
 #[tauri::command]
-fn set_product_enabled(state: State<AppState>, type_id: i64, enabled: bool) -> Result<Product, String> {
+fn set_product_enabled(
+    state: State<AppState>,
+    type_id: i64,
+    enabled: bool,
+) -> Result<Product, String> {
     let conn = open(&state)?;
-    conn.execute("update products set enabled = ?1 where type_id = ?2", params![if enabled { 1 } else { 0 }, type_id]).map_err(to_string)?;
+    conn.execute(
+        "update products set enabled = ?1 where type_id = ?2",
+        params![if enabled { 1 } else { 0 }, type_id],
+    )
+    .map_err(to_string)?;
     get_product(&conn, type_id)
 }
 
@@ -275,6 +363,21 @@ fn set_product_enabled(state: State<AppState>, type_id: i64, enabled: bool) -> R
 fn discover_hot_products(state: State<AppState>) -> Result<DiscoveryRun, String> {
     let conn = open(&state)?;
     discover_hot_products_inner(&conn)
+}
+
+#[tauri::command]
+fn start_refresh_next_batch(state: State<AppState>) -> Result<RefreshJob, String> {
+    start_refresh_job(state, "batch".to_string(), None, false)
+}
+
+#[tauri::command]
+fn start_reset_and_refresh(state: State<AppState>) -> Result<RefreshJob, String> {
+    start_refresh_job(state, "reset".to_string(), None, true)
+}
+
+#[tauri::command]
+fn start_refresh_product(state: State<AppState>, type_id: i64) -> Result<RefreshJob, String> {
+    start_refresh_job(state, "product".to_string(), Some(type_id), false)
 }
 
 #[tauri::command]
@@ -293,40 +396,155 @@ fn refresh_next_batch(state: State<AppState>) -> Result<RefreshRun, String> {
 #[tauri::command]
 fn refresh_product(state: State<AppState>, type_id: i64) -> Result<Opportunity, String> {
     let conn = open(&state)?;
-    let product = get_product(&conn, type_id)?;
+    refresh_product_inner(&conn, type_id)
+}
+
+fn start_refresh_job(
+    state: State<AppState>,
+    kind: String,
+    type_id: Option<i64>,
+    reset: bool,
+) -> Result<RefreshJob, String> {
+    let db_path = db_path(&state)?;
+    let conn = open_path(db_path.clone())?;
+    let current = get_refresh_job(&conn)?;
+    if current.status == "running" {
+        return Ok(current);
+    }
+    set_refresh_job(
+        &conn,
+        &RefreshJob {
+            status: "running".to_string(),
+            kind: kind.clone(),
+            current_item: String::new(),
+            scanned_count: 0,
+            total_count: 0,
+            api_calls: 0,
+            last_error: String::new(),
+            started_at: Utc::now().to_rfc3339(),
+            finished_at: String::new(),
+        },
+    )?;
+    thread::spawn(move || {
+        let _ = run_refresh_job(db_path, kind, type_id, reset);
+    });
+    get_refresh_job(&conn)
+}
+
+fn run_refresh_job(
+    db_path: PathBuf,
+    kind: String,
+    type_id: Option<i64>,
+    reset: bool,
+) -> Result<(), String> {
+    let conn = open_path(db_path.clone())?;
+    let result: Result<RefreshRun, String> = if kind == "product" {
+        refresh_product_inner(
+            &conn,
+            type_id.ok_or_else(|| "Missing product type ID".to_string())?,
+        )
+        .and_then(|_| latest_refresh_run(&conn))
+    } else {
+        refresh_next_batch_inner_with_job(&conn, reset)
+    };
+    match result {
+        Ok(run) => {
+            let mut job = get_refresh_job(&conn)?;
+            job.status = "done".to_string();
+            job.current_item = String::new();
+            job.api_calls = run.api_calls;
+            if !run.errors.is_empty() {
+                job.last_error = run.errors;
+            }
+            job.finished_at = Utc::now().to_rfc3339();
+            set_refresh_job(&conn, &job)
+        }
+        Err(error) => {
+            let mut job = get_refresh_job(&conn)?;
+            job.status = "failed".to_string();
+            job.last_error = error;
+            job.finished_at = Utc::now().to_rfc3339();
+            set_refresh_job(&conn, &job)
+        }
+    }
+}
+
+fn refresh_product_inner(conn: &Connection, type_id: i64) -> Result<Opportunity, String> {
+    let product = get_product(conn, type_id)?;
     let start = Utc::now();
     let mut api_calls = 0;
-    let opportunity = fetch_and_analyze(&conn, &product, &mut api_calls)?;
-    upsert_opportunity(&conn, &opportunity)?;
-    insert_run(&conn, RefreshRun {
-        refresh_time: start.to_rfc3339(),
-        items_scanned: 1,
-        opportunities_written: 1,
-        api_calls,
-        errors: String::new(),
-        skipped: "Manual product refresh".to_string(),
-        duration_seconds: (Utc::now() - start).num_seconds(),
-    })?;
+    update_refresh_job_progress(conn, &product.name, 0, 1, api_calls, "")?;
+    let opportunity = fetch_and_analyze(conn, &product, &mut api_calls)?;
+    upsert_opportunity(conn, &opportunity)?;
+    update_refresh_job_progress(conn, &product.name, 1, 1, api_calls, "")?;
+    insert_run(
+        conn,
+        RefreshRun {
+            refresh_time: start.to_rfc3339(),
+            items_scanned: 1,
+            opportunities_written: 1,
+            api_calls,
+            errors: String::new(),
+            skipped: "Manual product refresh".to_string(),
+            duration_seconds: (Utc::now() - start).num_seconds(),
+        },
+    )?;
     Ok(opportunity)
 }
 
 fn refresh_next_batch_inner(conn: &Connection) -> Result<RefreshRun, String> {
+    refresh_next_batch_inner_with_job(conn, false)
+}
+
+fn refresh_next_batch_inner_with_job(conn: &Connection, reset: bool) -> Result<RefreshRun, String> {
     let start = Utc::now();
-    let max_items = setting(conn, "Max items per refresh", "5").parse::<usize>().unwrap_or(5).max(1);
-    let delay_ms = setting(conn, "Delay between items ms", "300").parse::<u64>().unwrap_or(300);
-    let min_target_volume = setting(conn, "Skip refresh if target 30d volume below", "0").parse::<f64>().unwrap_or(0.0);
+    if reset {
+        conn.execute("insert into app_state(key, value) values ('cursor', '0') on conflict(key) do update set value = '0'", []).map_err(to_string)?;
+    }
+    let max_items = setting(conn, "Max items per refresh", "5")
+        .parse::<usize>()
+        .unwrap_or(5)
+        .max(1);
+    let delay_ms = setting(conn, "Delay between items ms", "300")
+        .parse::<u64>()
+        .unwrap_or(300);
+    let min_target_volume = setting(conn, "Skip refresh if target 30d volume below", "0")
+        .parse::<f64>()
+        .unwrap_or(0.0);
     let auto_disable_cold = setting(conn, "Auto-disable cold items", "TRUE") != "FALSE";
     let cursor = app_state(conn, "cursor").parse::<usize>().unwrap_or(0);
     let products = enabled_products(conn)?;
-    let selected: Vec<Product> = products.iter().skip(cursor).take(max_items).cloned().collect();
+    let selected: Vec<Product> = products
+        .iter()
+        .skip(cursor)
+        .take(max_items)
+        .cloned()
+        .collect();
+    update_refresh_job_progress(conn, "", 0, selected.len() as i64, 0, "")?;
     let mut errors = Vec::new();
     let mut written = 0;
     let mut skipped_low_volume = 0;
     let mut api_calls = 0;
 
-    for product in &selected {
+    for (index, product) in selected.iter().enumerate() {
+        update_refresh_job_progress(
+            conn,
+            &product.name,
+            index as i64,
+            selected.len() as i64,
+            api_calls,
+            "",
+        )?;
         if should_skip_low_target_volume(conn, product.type_id, min_target_volume)? {
             skipped_low_volume += 1;
+            update_refresh_job_progress(
+                conn,
+                &product.name,
+                (index + 1) as i64,
+                selected.len() as i64,
+                api_calls,
+                "",
+            )?;
             continue;
         }
         match fetch_and_analyze(conn, product, &mut api_calls) {
@@ -334,13 +552,40 @@ fn refresh_next_batch_inner(conn: &Connection) -> Result<RefreshRun, String> {
                 if auto_disable_cold && is_cold_opportunity(&opportunity, min_target_volume) {
                     mark_product_cold(conn, product.type_id)?;
                     skipped_low_volume += 1;
+                    update_refresh_job_progress(
+                        conn,
+                        &product.name,
+                        (index + 1) as i64,
+                        selected.len() as i64,
+                        api_calls,
+                        "",
+                    )?;
                     continue;
                 }
                 upsert_opportunity(conn, &opportunity)?;
                 written += 1;
             }
-            Err(error) => errors.push(format!("{}: {}", product.type_id, error)),
+            Err(error) => {
+                let message = format!("{}: {}", product.type_id, error);
+                update_refresh_job_progress(
+                    conn,
+                    &product.name,
+                    (index + 1) as i64,
+                    selected.len() as i64,
+                    api_calls,
+                    &message,
+                )?;
+                errors.push(message);
+            }
         }
+        update_refresh_job_progress(
+            conn,
+            &product.name,
+            (index + 1) as i64,
+            selected.len() as i64,
+            api_calls,
+            "",
+        )?;
         if delay_ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
         }
@@ -348,11 +593,31 @@ fn refresh_next_batch_inner(conn: &Connection) -> Result<RefreshRun, String> {
 
     let next_cursor = cursor + selected.len();
     let complete = next_cursor >= products.len();
-    set_app_state(conn, "cursor", if complete { "0".to_string() } else { next_cursor.to_string() })?;
+    set_app_state(
+        conn,
+        "cursor",
+        if complete {
+            "0".to_string()
+        } else {
+            next_cursor.to_string()
+        },
+    )?;
     let skipped = format!(
         "{}{}",
-        if complete { "Complete".to_string() } else { format!("Next starts at item {} of {}", next_cursor + 1, products.len()) },
-        if skipped_low_volume > 0 { format!("; skipped low target volume: {}", skipped_low_volume) } else { String::new() }
+        if complete {
+            "Complete".to_string()
+        } else {
+            format!(
+                "Next starts at item {} of {}",
+                next_cursor + 1,
+                products.len()
+            )
+        },
+        if skipped_low_volume > 0 {
+            format!("; skipped low target volume: {}", skipped_low_volume)
+        } else {
+            String::new()
+        }
     );
     let run = RefreshRun {
         refresh_time: start.to_rfc3339(),
@@ -417,7 +682,11 @@ fn run_initial_discovery_if_needed(conn: &Connection) {
 }
 
 fn import_item_types(conn: &Connection) -> Result<i64, String> {
-    let url = setting(conn, "Item type CSV URL", "https://www.fuzzwork.co.uk/resources/typeids.csv");
+    let url = setting(
+        conn,
+        "Item type CSV URL",
+        "https://www.fuzzwork.co.uk/resources/typeids.csv",
+    );
     let body = reqwest::blocking::Client::new()
         .get(url)
         .header("User-Agent", "EVE Metrade local app")
@@ -427,13 +696,18 @@ fn import_item_types(conn: &Connection) -> Result<i64, String> {
         .map_err(to_string)?
         .bytes()
         .map_err(to_string)?;
-    let mut reader = csv::ReaderBuilder::new().has_headers(false).from_reader(body.as_ref());
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .from_reader(body.as_ref());
     let tx = conn.unchecked_transaction().map_err(to_string)?;
     let now = Utc::now().to_rfc3339();
     let mut imported = 0;
     for record in reader.records() {
         let record = record.map_err(to_string)?;
-        let type_id = record.get(0).and_then(|value| value.parse::<i64>().ok()).unwrap_or(0);
+        let type_id = record
+            .get(0)
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
         let name = record.get(1).unwrap_or("").trim();
         if type_id <= 0 || name.is_empty() || name.starts_with('#') {
             continue;
@@ -450,9 +724,17 @@ fn import_item_types(conn: &Connection) -> Result<i64, String> {
 }
 
 fn import_market_aggregates(conn: &Connection) -> Result<i64, String> {
-    let url = setting(conn, "Market aggregate CSV URL", "https://market.fuzzwork.co.uk/aggregatecsv.csv.gz");
-    let forge_region = setting(conn, "The Forge region ID", "10000002").parse::<i64>().unwrap_or(10000002);
-    let domain_region = setting(conn, "Domain region ID", "10000043").parse::<i64>().unwrap_or(10000043);
+    let url = setting(
+        conn,
+        "Market aggregate CSV URL",
+        "https://market.fuzzwork.co.uk/aggregatecsv.csv.gz",
+    );
+    let forge_region = setting(conn, "The Forge region ID", "10000002")
+        .parse::<i64>()
+        .unwrap_or(10000002);
+    let domain_region = setting(conn, "Domain region ID", "10000043")
+        .parse::<i64>()
+        .unwrap_or(10000043);
     let bytes = reqwest::blocking::Client::new()
         .get(url)
         .header("User-Agent", "EVE Metrade local app")
@@ -463,18 +745,30 @@ fn import_market_aggregates(conn: &Connection) -> Result<i64, String> {
         .bytes()
         .map_err(to_string)?;
     let mut decoded = String::new();
-    GzDecoder::new(bytes.as_ref()).read_to_string(&mut decoded).map_err(to_string)?;
+    GzDecoder::new(bytes.as_ref())
+        .read_to_string(&mut decoded)
+        .map_err(to_string)?;
     let mut reader = csv::Reader::from_reader(decoded.as_bytes());
     let tx = conn.unchecked_transaction().map_err(to_string)?;
     let now = Utc::now().to_rfc3339();
-    tx.execute("delete from market_aggregates where region_id in (?1, ?2)", params![forge_region, domain_region]).map_err(to_string)?;
+    tx.execute(
+        "delete from market_aggregates where region_id in (?1, ?2)",
+        params![forge_region, domain_region],
+    )
+    .map_err(to_string)?;
     let mut imported = 0;
     for record in reader.records() {
         let record = record.map_err(to_string)?;
         let what = record.get(0).unwrap_or("");
         let mut parts = what.split('|');
-        let region_id = parts.next().and_then(|value| value.parse::<i64>().ok()).unwrap_or(0);
-        let type_id = parts.next().and_then(|value| value.parse::<i64>().ok()).unwrap_or(0);
+        let region_id = parts
+            .next()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        let type_id = parts
+            .next()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
         let is_buy = parts.next().map(|value| value == "true").unwrap_or(false);
         if (region_id != forge_region && region_id != domain_region) || is_buy || type_id <= 0 {
             continue;
@@ -506,14 +800,28 @@ fn import_market_aggregates(conn: &Connection) -> Result<i64, String> {
 }
 
 fn generate_candidates(conn: &Connection) -> Result<(i64, i64), String> {
-    let forge_region = setting(conn, "The Forge region ID", "10000002").parse::<i64>().unwrap_or(10000002);
-    let domain_region = setting(conn, "Domain region ID", "10000043").parse::<i64>().unwrap_or(10000043);
-    let min_volume = setting(conn, "Candidate minimum sell volume per hub", "100").parse::<f64>().unwrap_or(100.0);
-    let min_orders = setting(conn, "Candidate minimum sell orders per hub", "1").parse::<i64>().unwrap_or(1);
-    let min_spread = setting(conn, "Candidate minimum rough spread", "0.03").parse::<f64>().unwrap_or(0.03);
-    let max_candidates = setting(conn, "Candidate max enabled products", "500").parse::<i64>().unwrap_or(500).max(1);
+    let forge_region = setting(conn, "The Forge region ID", "10000002")
+        .parse::<i64>()
+        .unwrap_or(10000002);
+    let domain_region = setting(conn, "Domain region ID", "10000043")
+        .parse::<i64>()
+        .unwrap_or(10000043);
+    let min_volume = setting(conn, "Candidate minimum sell volume per hub", "100")
+        .parse::<f64>()
+        .unwrap_or(100.0);
+    let min_orders = setting(conn, "Candidate minimum sell orders per hub", "1")
+        .parse::<i64>()
+        .unwrap_or(1);
+    let min_spread = setting(conn, "Candidate minimum rough spread", "0.03")
+        .parse::<f64>()
+        .unwrap_or(0.03);
+    let max_candidates = setting(conn, "Candidate max enabled products", "500")
+        .parse::<i64>()
+        .unwrap_or(500)
+        .max(1);
     let now = Utc::now().to_rfc3339();
-    conn.execute("delete from candidate_products", []).map_err(to_string)?;
+    conn.execute("delete from candidate_products", [])
+        .map_err(to_string)?;
     conn.execute(
         "insert into candidate_products(type_id, name, source, source_updated_at, forge_sell_volume, domain_sell_volume, forge_sell_price, domain_sell_price, rough_spread, score, enabled, reason)
          select f.type_id,
@@ -554,7 +862,11 @@ fn generate_candidates(conn: &Connection) -> Result<(i64, i64), String> {
          limit ?7",
         params![now, forge_region, domain_region, min_volume, min_orders, min_spread, max_candidates],
     ).map_err(to_string)?;
-    let candidates: i64 = conn.query_row("select count(*) from candidate_products", [], |row| row.get(0)).map_err(to_string)?;
+    let candidates: i64 = conn
+        .query_row("select count(*) from candidate_products", [], |row| {
+            row.get(0)
+        })
+        .map_err(to_string)?;
     conn.execute(
         "insert into products(type_id, name, enabled, notes)
          select type_id, name, 1, ''
@@ -563,59 +875,180 @@ fn generate_candidates(conn: &Connection) -> Result<(i64, i64), String> {
          on conflict(type_id) do update set name = case when products.name = '' then excluded.name else products.name end, enabled = 1",
         [],
     ).map_err(to_string)?;
-    let enabled: i64 = conn.query_row("select count(*) from products where enabled = 1", [], |row| row.get(0)).map_err(to_string)?;
+    let enabled: i64 = conn
+        .query_row(
+            "select count(*) from products where enabled = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(to_string)?;
     set_app_state(conn, "cursor", "0".to_string())?;
     Ok((candidates, enabled))
 }
 
-fn fetch_and_analyze(conn: &Connection, product: &Product, api_calls: &mut i64) -> Result<Opportunity, String> {
+fn fetch_and_analyze(
+    conn: &Connection,
+    product: &Product,
+    api_calls: &mut i64,
+) -> Result<Opportunity, String> {
     let base = setting(conn, "ESI base URL", "https://esi.evetech.net/latest");
-    let forge_region = setting(conn, "The Forge region ID", "10000002").parse::<i64>().unwrap_or(10000002);
-    let domain_region = setting(conn, "Domain region ID", "10000043").parse::<i64>().unwrap_or(10000043);
-    let error_limit_threshold = setting(conn, "ESI low error-limit threshold", "20").parse::<u64>().unwrap_or(20);
+    let forge_region = setting(conn, "The Forge region ID", "10000002")
+        .parse::<i64>()
+        .unwrap_or(10000002);
+    let domain_region = setting(conn, "Domain region ID", "10000043")
+        .parse::<i64>()
+        .unwrap_or(10000043);
+    let error_limit_threshold = setting(conn, "ESI low error-limit threshold", "20")
+        .parse::<u64>()
+        .unwrap_or(20);
     let product = product_with_name(conn, product, &base, api_calls, error_limit_threshold);
-    let forge_orders: Vec<EsiOrder> = fetch_json(conn, &format!("{}/markets/{}/orders/?datasource=tranquility&order_type=sell&type_id={}&page=1", base, forge_region, product.type_id), api_calls, error_limit_threshold)?;
-    let domain_orders: Vec<EsiOrder> = fetch_json(conn, &format!("{}/markets/{}/orders/?datasource=tranquility&order_type=sell&type_id={}&page=1", base, domain_region, product.type_id), api_calls, error_limit_threshold)?;
-    let forge_history: Vec<HistoryRow> = fetch_json(conn, &format!("{}/markets/{}/history/?datasource=tranquility&type_id={}", base, forge_region, product.type_id), api_calls, error_limit_threshold)?;
-    let domain_history: Vec<HistoryRow> = fetch_json(conn, &format!("{}/markets/{}/history/?datasource=tranquility&type_id={}", base, domain_region, product.type_id), api_calls, error_limit_threshold)?;
-    Ok(analyze(conn, &product, forge_orders, domain_orders, recent_volume(&forge_history), recent_volume(&domain_history)))
+    let forge_orders: Vec<EsiOrder> = fetch_json(
+        conn,
+        &format!(
+            "{}/markets/{}/orders/?datasource=tranquility&order_type=sell&type_id={}&page=1",
+            base, forge_region, product.type_id
+        ),
+        api_calls,
+        error_limit_threshold,
+    )?;
+    let domain_orders: Vec<EsiOrder> = fetch_json(
+        conn,
+        &format!(
+            "{}/markets/{}/orders/?datasource=tranquility&order_type=sell&type_id={}&page=1",
+            base, domain_region, product.type_id
+        ),
+        api_calls,
+        error_limit_threshold,
+    )?;
+    let forge_history: Vec<HistoryRow> = fetch_json(
+        conn,
+        &format!(
+            "{}/markets/{}/history/?datasource=tranquility&type_id={}",
+            base, forge_region, product.type_id
+        ),
+        api_calls,
+        error_limit_threshold,
+    )?;
+    let domain_history: Vec<HistoryRow> = fetch_json(
+        conn,
+        &format!(
+            "{}/markets/{}/history/?datasource=tranquility&type_id={}",
+            base, domain_region, product.type_id
+        ),
+        api_calls,
+        error_limit_threshold,
+    )?;
+    Ok(analyze(
+        conn,
+        &product,
+        forge_orders,
+        domain_orders,
+        recent_volume(&forge_history),
+        recent_volume(&domain_history),
+    ))
 }
 
-fn product_with_name(conn: &Connection, product: &Product, base: &str, api_calls: &mut i64, error_limit_threshold: u64) -> Product {
+fn product_with_name(
+    conn: &Connection,
+    product: &Product,
+    base: &str,
+    api_calls: &mut i64,
+    error_limit_threshold: u64,
+) -> Product {
     if !product.name.trim().is_empty() {
         return product.clone();
     }
     let mut named = product.clone();
-    if let Ok(type_info) = fetch_json::<EsiType>(conn, &format!("{}/universe/types/{}/?datasource=tranquility&language=en", base, product.type_id), api_calls, error_limit_threshold) {
+    if let Ok(type_info) = fetch_json::<EsiType>(
+        conn,
+        &format!(
+            "{}/universe/types/{}/?datasource=tranquility&language=en",
+            base, product.type_id
+        ),
+        api_calls,
+        error_limit_threshold,
+    ) {
         named.name = type_info.name.trim().to_string();
-        let _ = conn.execute("update products set name = ?1 where type_id = ?2", params![named.name, named.type_id]);
-        let _ = conn.execute("update opportunities set item_name = ?1 where type_id = ?2 and item_name = ''", params![named.name, named.type_id]);
+        let _ = conn.execute(
+            "update products set name = ?1 where type_id = ?2",
+            params![named.name, named.type_id],
+        );
+        let _ = conn.execute(
+            "update opportunities set item_name = ?1 where type_id = ?2 and item_name = ''",
+            params![named.name, named.type_id],
+        );
     }
     named
 }
 
-fn analyze(conn: &Connection, product: &Product, forge_orders: Vec<EsiOrder>, domain_orders: Vec<EsiOrder>, forge_volume: f64, domain_volume: f64) -> Opportunity {
-    let jita_station = setting(conn, "Jita station ID", "60003760").parse::<i64>().unwrap_or(60003760);
-    let amarr_station = setting(conn, "Amarr station ID", "60008494").parse::<i64>().unwrap_or(60008494);
-    let min_spread = setting(conn, "Minimum spread", "0.2").parse::<f64>().unwrap_or(0.2);
-    let min_profit = setting(conn, "Minimum estimated profit", "500000").parse::<f64>().unwrap_or(500000.0);
-    let min_source_volume = setting(conn, "Minimum 30d source volume", "1").parse::<f64>().unwrap_or(1.0);
-    let min_dest_volume = setting(conn, "Minimum 30d destination volume", "1").parse::<f64>().unwrap_or(1.0);
+fn analyze(
+    conn: &Connection,
+    product: &Product,
+    forge_orders: Vec<EsiOrder>,
+    domain_orders: Vec<EsiOrder>,
+    forge_volume: f64,
+    domain_volume: f64,
+) -> Opportunity {
+    let jita_station = setting(conn, "Jita station ID", "60003760")
+        .parse::<i64>()
+        .unwrap_or(60003760);
+    let amarr_station = setting(conn, "Amarr station ID", "60008494")
+        .parse::<i64>()
+        .unwrap_or(60008494);
+    let min_spread = setting(conn, "Minimum spread", "0.2")
+        .parse::<f64>()
+        .unwrap_or(0.2);
+    let min_profit = setting(conn, "Minimum estimated profit", "500000")
+        .parse::<f64>()
+        .unwrap_or(500000.0);
+    let min_source_volume = setting(conn, "Minimum 30d source volume", "1")
+        .parse::<f64>()
+        .unwrap_or(1.0);
+    let min_dest_volume = setting(conn, "Minimum 30d destination volume", "1")
+        .parse::<f64>()
+        .unwrap_or(1.0);
     let refreshed = Utc::now().to_rfc3339();
-    let mut jita_sells: Vec<&EsiOrder> = forge_orders.iter().filter(|order| !order.is_buy_order && order.location_id == jita_station).collect();
-    let mut amarr_sells: Vec<&EsiOrder> = domain_orders.iter().filter(|order| !order.is_buy_order && order.location_id == amarr_station).collect();
+    let mut jita_sells: Vec<&EsiOrder> = forge_orders
+        .iter()
+        .filter(|order| !order.is_buy_order && order.location_id == jita_station)
+        .collect();
+    let mut amarr_sells: Vec<&EsiOrder> = domain_orders
+        .iter()
+        .filter(|order| !order.is_buy_order && order.location_id == amarr_station)
+        .collect();
     jita_sells.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
     amarr_sells.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
     let jita_low = jita_sells.first().map(|order| order.price).unwrap_or(0.0);
     let amarr_low = amarr_sells.first().map(|order| order.price).unwrap_or(0.0);
     if jita_low == 0.0 && amarr_low == 0.0 {
-        return empty_opportunity("NO SELL ORDERS", product, forge_volume, domain_volume, refreshed, "No sell orders at either hub station");
+        return empty_opportunity(
+            "NO SELL ORDERS",
+            product,
+            forge_volume,
+            domain_volume,
+            refreshed,
+            "No sell orders at either hub station",
+        );
     }
     if jita_low == 0.0 {
-        return empty_opportunity("NO JITA SELL", product, forge_volume, domain_volume, refreshed, "No Jita sell orders at hub station");
+        return empty_opportunity(
+            "NO JITA SELL",
+            product,
+            forge_volume,
+            domain_volume,
+            refreshed,
+            "No Jita sell orders at hub station",
+        );
     }
     if amarr_low == 0.0 {
-        return empty_opportunity("NO AMARR SELL", product, forge_volume, domain_volume, refreshed, "No Amarr sell orders at hub station");
+        return empty_opportunity(
+            "NO AMARR SELL",
+            product,
+            forge_volume,
+            domain_volume,
+            refreshed,
+            "No Amarr sell orders at hub station",
+        );
     }
     let (buy_hub, sell_hub, buy_price, sell_reference, source_available, buy_volume, sell_volume): (&str, &str, f64, f64, f64, f64, f64) = if jita_low <= amarr_low {
         ("Jita", "Amarr", jita_low, amarr_low, jita_sells.iter().filter(|order| order.price <= jita_low).map(|order| order.volume_remain).sum(), forge_volume, domain_volume)
@@ -623,7 +1056,11 @@ fn analyze(conn: &Connection, product: &Product, forge_orders: Vec<EsiOrder>, do
         ("Amarr", "Jita", amarr_low, jita_low, amarr_sells.iter().filter(|order| order.price <= amarr_low).map(|order| order.volume_remain).sum(), domain_volume, forge_volume)
     };
     let profit = sell_reference - buy_price;
-    let spread = if buy_price > 0.0 { profit / buy_price } else { 0.0 };
+    let spread = if buy_price > 0.0 {
+        profit / buy_price
+    } else {
+        0.0
+    };
     let estimated_profit: f64 = (source_available * profit).max(0.0);
     let (status, script_notes) = if profit <= 0.0 {
         ("NO SPREAD", "Lowest sell prices are equal or inverted.")
@@ -684,6 +1121,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
           last_refresh text, notes text not null, script_notes text not null
         );
         create table if not exists refresh_runs(refresh_time text not null, items_scanned integer not null, opportunities_written integer not null, api_calls integer not null, errors text not null, skipped text not null, duration_seconds integer not null);
+        create table if not exists refresh_jobs(
+          id integer primary key check(id = 1),
+          status text not null, kind text not null, current_item text not null,
+          scanned_count integer not null, total_count integer not null, api_calls integer not null,
+          last_error text not null, started_at text not null, finished_at text not null
+        );
         create table if not exists discovery_runs(run_time text not null, item_types_imported integer not null, market_rows_imported integer not null, candidates_found integer not null, products_enabled integer not null, errors text not null, duration_seconds integer not null);
         create table if not exists app_state(key text primary key, value text not null);
         create table if not exists api_limit_state(key text primary key, value text not null);
@@ -700,14 +1143,46 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
     let discovery_settings = [
-        ("Item type CSV URL", "https://www.fuzzwork.co.uk/resources/typeids.csv", "Static type ID and name list. Does not use ESI."),
-        ("Market aggregate CSV URL", "https://market.fuzzwork.co.uk/aggregatecsv.csv.gz", "Bulk market aggregate snapshot. Does not use ESI."),
-        ("Candidate minimum sell volume per hub", "100", "Fuzzwork aggregate sell volume required in both regions."),
-        ("Candidate minimum sell orders per hub", "1", "Fuzzwork aggregate sell order count required in both regions."),
-        ("Candidate minimum rough spread", "0.03", "Minimum rough price gap before spending ESI calls."),
-        ("Candidate max enabled products", "500", "Maximum discovered products to add to the ESI refresh list."),
-        ("Estimated safe ESI calls per hour", "1200", "UI budget for the API burn-rate indicator."),
-        ("Auto-disable cold items", "TRUE", "After ESI validation, cold/low-traffic items are disabled to avoid future calls.")
+        (
+            "Item type CSV URL",
+            "https://www.fuzzwork.co.uk/resources/typeids.csv",
+            "Static type ID and name list. Does not use ESI.",
+        ),
+        (
+            "Market aggregate CSV URL",
+            "https://market.fuzzwork.co.uk/aggregatecsv.csv.gz",
+            "Bulk market aggregate snapshot. Does not use ESI.",
+        ),
+        (
+            "Candidate minimum sell volume per hub",
+            "100",
+            "Fuzzwork aggregate sell volume required in both regions.",
+        ),
+        (
+            "Candidate minimum sell orders per hub",
+            "1",
+            "Fuzzwork aggregate sell order count required in both regions.",
+        ),
+        (
+            "Candidate minimum rough spread",
+            "0.03",
+            "Minimum rough price gap before spending ESI calls.",
+        ),
+        (
+            "Candidate max enabled products",
+            "500",
+            "Maximum discovered products to add to the ESI refresh list.",
+        ),
+        (
+            "Estimated safe ESI calls per hour",
+            "1200",
+            "UI budget for the API burn-rate indicator.",
+        ),
+        (
+            "Auto-disable cold items",
+            "TRUE",
+            "After ESI validation, cold/low-traffic items are disabled to avoid future calls.",
+        ),
     ];
     for row in discovery_settings {
         conn.execute("insert into settings(key, value, notes) values (?1, ?2, ?3) on conflict(key) do nothing", params![row.0, row.1, row.2])?;
@@ -724,39 +1199,132 @@ fn seed(conn: &Connection) -> rusqlite::Result<()> {
         return Ok(());
     }
     let settings = [
-        ("Jita station ID", "60003760", "Jita IV - Moon 4 - Caldari Navy Assembly Plant"),
-        ("Amarr station ID", "60008494", "Amarr VIII (Oris) - Emperor Family Academy"),
+        (
+            "Jita station ID",
+            "60003760",
+            "Jita IV - Moon 4 - Caldari Navy Assembly Plant",
+        ),
+        (
+            "Amarr station ID",
+            "60008494",
+            "Amarr VIII (Oris) - Emperor Family Academy",
+        ),
         ("The Forge region ID", "10000002", "Jita region"),
         ("Domain region ID", "10000043", "Amarr region"),
         ("Minimum spread", "0.2", "20% default"),
         ("Minimum estimated profit", "500000", "ISK"),
-        ("Minimum 30d source volume", "1", "Regional history traffic check"),
-        ("Minimum 30d destination volume", "1", "Regional history traffic check"),
+        (
+            "Minimum 30d source volume",
+            "1",
+            "Regional history traffic check",
+        ),
+        (
+            "Minimum 30d destination volume",
+            "1",
+            "Regional history traffic check",
+        ),
         ("History days", "30", "Use recent market history"),
-        ("Max items per refresh", "5", "Lowered after URL-fetch quota and ESI 429 errors."),
-        ("Delay between items ms", "300", "Slower requests reduce ESI pressure."),
-        ("Include weak rows", "TRUE", "TRUE keeps rejected rows with status notes"),
+        (
+            "Max items per refresh",
+            "5",
+            "Lowered after URL-fetch quota and ESI 429 errors.",
+        ),
+        (
+            "Delay between items ms",
+            "300",
+            "Slower requests reduce ESI pressure.",
+        ),
+        (
+            "Include weak rows",
+            "TRUE",
+            "TRUE keeps rejected rows with status notes",
+        ),
         ("Raw order rows per item/route", "10", "Limits audit rows"),
-        ("ESI base URL", "https://esi.evetech.net/latest", "Public ESI, no login"),
-        ("User agent", "EVE Metrade local app", "Public ESI user agent"),
-        ("Automatic refresh enabled", "TRUE", "Controls background refresh"),
-        ("Automatic refresh interval seconds", "600", "Runs one batch every 10 minutes; keep this at 60 or higher for ESI safety."),
-        ("ESI low error-limit threshold", "20", "When ESI reports this many or fewer errors left, the app waits for reset."),
-        ("Item type CSV URL", "https://www.fuzzwork.co.uk/resources/typeids.csv", "Static type ID and name list. Does not use ESI."),
-        ("Market aggregate CSV URL", "https://market.fuzzwork.co.uk/aggregatecsv.csv.gz", "Bulk market aggregate snapshot. Does not use ESI."),
-        ("Candidate minimum sell volume per hub", "100", "Fuzzwork aggregate sell volume required in both regions."),
-        ("Candidate minimum sell orders per hub", "1", "Fuzzwork aggregate sell order count required in both regions."),
-        ("Candidate minimum rough spread", "0.03", "Minimum rough price gap before spending ESI calls."),
-        ("Candidate max enabled products", "500", "Maximum discovered products to add to the ESI refresh list."),
-        ("Estimated safe ESI calls per hour", "1200", "UI budget for the API burn-rate indicator."),
-        ("Auto-disable cold items", "TRUE", "After ESI validation, cold/low-traffic items are disabled to avoid future calls."),
-        ("Skip refresh if target 30d volume below", "50", "Skips already-known dead destination markets")
+        (
+            "ESI base URL",
+            "https://esi.evetech.net/latest",
+            "Public ESI, no login",
+        ),
+        (
+            "User agent",
+            "EVE Metrade local app",
+            "Public ESI user agent",
+        ),
+        (
+            "Automatic refresh enabled",
+            "TRUE",
+            "Controls background refresh",
+        ),
+        (
+            "Automatic refresh interval seconds",
+            "600",
+            "Runs one batch every 10 minutes; keep this at 60 or higher for ESI safety.",
+        ),
+        (
+            "ESI low error-limit threshold",
+            "20",
+            "When ESI reports this many or fewer errors left, the app waits for reset.",
+        ),
+        (
+            "Item type CSV URL",
+            "https://www.fuzzwork.co.uk/resources/typeids.csv",
+            "Static type ID and name list. Does not use ESI.",
+        ),
+        (
+            "Market aggregate CSV URL",
+            "https://market.fuzzwork.co.uk/aggregatecsv.csv.gz",
+            "Bulk market aggregate snapshot. Does not use ESI.",
+        ),
+        (
+            "Candidate minimum sell volume per hub",
+            "100",
+            "Fuzzwork aggregate sell volume required in both regions.",
+        ),
+        (
+            "Candidate minimum sell orders per hub",
+            "1",
+            "Fuzzwork aggregate sell order count required in both regions.",
+        ),
+        (
+            "Candidate minimum rough spread",
+            "0.03",
+            "Minimum rough price gap before spending ESI calls.",
+        ),
+        (
+            "Candidate max enabled products",
+            "500",
+            "Maximum discovered products to add to the ESI refresh list.",
+        ),
+        (
+            "Estimated safe ESI calls per hour",
+            "1200",
+            "UI budget for the API burn-rate indicator.",
+        ),
+        (
+            "Auto-disable cold items",
+            "TRUE",
+            "After ESI validation, cold/low-traffic items are disabled to avoid future calls.",
+        ),
+        (
+            "Skip refresh if target 30d volume below",
+            "50",
+            "Skips already-known dead destination markets",
+        ),
     ];
     for setting_row in settings {
-        conn.execute("insert into settings(key, value, notes) values (?1, ?2, ?3)", params![setting_row.0, setting_row.1, setting_row.2])?;
+        conn.execute(
+            "insert into settings(key, value, notes) values (?1, ?2, ?3)",
+            params![setting_row.0, setting_row.1, setting_row.2],
+        )?;
     }
-    for type_id in [2180, 2403, 2549, 3266, 3456, 3777, 3995, 4435, 10244, 11443, 31270, 31274, 31312, 31412, 31532, 31600, 31718, 31754, 31764, 31874, 31876, 32994, 33180, 33334, 33441, 33569, 33704] {
-        conn.execute("insert into products(type_id, name, enabled, notes) values (?1, '', 1, '')", params![type_id])?;
+    for type_id in [
+        2180, 2403, 2549, 3266, 3456, 3777, 3995, 4435, 10244, 11443, 31270, 31274, 31312, 31412,
+        31532, 31600, 31718, 31754, 31764, 31874, 31876, 32994, 33180, 33334, 33441, 33569, 33704,
+    ] {
+        conn.execute(
+            "insert into products(type_id, name, enabled, notes) values (?1, '', 1, '')",
+            params![type_id],
+        )?;
     }
     conn.execute(
         "insert into app_state(key, value) values ('cursor', '0') on conflict(key) do update set value = '0'",
@@ -797,8 +1365,14 @@ fn seed_initial_opportunities(conn: &Connection) -> rusqlite::Result<()> {
         (33704, "Medium Hull Maintenance Bot I"),
     ];
     for (type_id, name) in names {
-        conn.execute("update products set name = ?1 where type_id = ?2 and name = ''", params![name, type_id])?;
-        conn.execute("update opportunities set item_name = ?1 where type_id = ?2 and item_name = ''", params![name, type_id])?;
+        conn.execute(
+            "update products set name = ?1 where type_id = ?2 and name = ''",
+            params![name, type_id],
+        )?;
+        conn.execute(
+            "update opportunities set item_name = ?1 where type_id = ?2 and item_name = ''",
+            params![name, type_id],
+        )?;
     }
     if count > 0 {
         return Ok(());
@@ -827,12 +1401,30 @@ fn seed_initial_opportunities(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 fn open(state: &State<AppState>) -> Result<Connection, String> {
-    let path = state.db_path.lock().map_err(|_| "Database lock poisoned".to_string())?.clone();
-    Connection::open(path).map_err(to_string)
+    open_path(db_path(state)?)
 }
 
-fn rows<T>(mapped: rusqlite::MappedRows<impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>>) -> Result<Vec<T>, String> {
-    mapped.collect::<rusqlite::Result<Vec<T>>>().map_err(to_string)
+fn db_path(state: &State<AppState>) -> Result<PathBuf, String> {
+    state
+        .db_path
+        .lock()
+        .map_err(|_| "Database lock poisoned".to_string())
+        .map(|path| path.clone())
+}
+
+fn open_path(path: PathBuf) -> Result<Connection, String> {
+    let conn = Connection::open(path).map_err(to_string)?;
+    conn.busy_timeout(StdDuration::from_secs(5))
+        .map_err(to_string)?;
+    Ok(conn)
+}
+
+fn rows<T>(
+    mapped: rusqlite::MappedRows<impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>>,
+) -> Result<Vec<T>, String> {
+    mapped
+        .collect::<rusqlite::Result<Vec<T>>>()
+        .map_err(to_string)
 }
 
 fn to_string(error: impl std::fmt::Display) -> String {
@@ -840,25 +1432,46 @@ fn to_string(error: impl std::fmt::Display) -> String {
 }
 
 fn csv_f64(record: &csv::StringRecord, index: usize) -> f64 {
-    record.get(index).and_then(|value| value.parse::<f64>().ok()).unwrap_or(0.0)
+    record
+        .get(index)
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.0)
 }
 
 fn csv_i64(record: &csv::StringRecord, index: usize) -> i64 {
-    record.get(index).and_then(|value| value.parse::<i64>().ok()).unwrap_or(0)
+    record
+        .get(index)
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0)
 }
 
 fn count_table(conn: &Connection, table: &str) -> Result<i64, String> {
-    conn.query_row(&format!("select count(*) from {}", table), [], |row| row.get(0)).map_err(to_string)
+    conn.query_row(&format!("select count(*) from {}", table), [], |row| {
+        row.get(0)
+    })
+    .map_err(to_string)
 }
 
 fn discovery_summary(conn: &Connection) -> Result<DiscoverySummary, String> {
-    let last = conn.query_row("select run_time from discovery_runs order by rowid desc limit 1", [], |row| row.get(0)).unwrap_or_else(|_| "Never".to_string());
+    let last = conn
+        .query_row(
+            "select run_time from discovery_runs order by rowid desc limit 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "Never".to_string());
     Ok(DiscoverySummary {
         known_items: count_table(conn, "item_types")?,
         market_rows: count_table(conn, "market_aggregates")?,
         candidates: count_table(conn, "candidate_products")?,
         products: count_table(conn, "products")?,
-        enabled_products: conn.query_row("select count(*) from products where enabled = 1", [], |row| row.get(0)).map_err(to_string)?,
+        enabled_products: conn
+            .query_row(
+                "select count(*) from products where enabled = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(to_string)?,
         last_discovery: last,
     })
 }
@@ -866,31 +1479,74 @@ fn discovery_summary(conn: &Connection) -> Result<DiscoverySummary, String> {
 fn api_limit_status(conn: &Connection) -> Result<ApiLimitStatus, String> {
     Ok(ApiLimitStatus {
         last_response_at: api_state(conn, "last_response_at", "Never"),
-        last_status: api_state(conn, "last_status", "0").parse::<i64>().unwrap_or(0),
+        last_status: api_state(conn, "last_status", "0")
+            .parse::<i64>()
+            .unwrap_or(0),
         error_limit_remain: optional_i64(api_state(conn, "error_limit_remain", "")),
         error_limit_reset: optional_i64(api_state(conn, "error_limit_reset", "")),
         retry_after: optional_i64(api_state(conn, "retry_after", "")),
+        rate_limit_limit: api_state(conn, "rate_limit_limit", ""),
+        rate_limit_remaining: optional_i64(api_state(conn, "rate_limit_remaining", "")),
+        rate_limit_used: optional_i64(api_state(conn, "rate_limit_used", "")),
         rate_limited: api_state(conn, "rate_limited", "FALSE") == "TRUE",
         last_url: api_state(conn, "last_url", ""),
     })
 }
 
-fn record_api_limit_state(conn: &Connection, url: &str, status: i64, headers: &reqwest::header::HeaderMap) -> Result<(), String> {
-    let retry_after = header_u64(headers, "retry-after").map(|value| value.to_string()).unwrap_or_default();
-    let remain = header_u64(headers, "x-esi-error-limit-remain").map(|value| value.to_string()).unwrap_or_default();
-    let reset = header_u64(headers, "x-esi-error-limit-reset").map(|value| value.to_string()).unwrap_or_default();
+fn record_api_limit_state(
+    conn: &Connection,
+    url: &str,
+    status: i64,
+    headers: &reqwest::header::HeaderMap,
+) -> Result<(), String> {
+    let retry_after = header_u64(headers, "retry-after")
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let remain = header_u64(headers, "x-esi-error-limit-remain")
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let reset = header_u64(headers, "x-esi-error-limit-reset")
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let rate_limit_limit = headers
+        .get("x-ratelimit-limit")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let rate_limit_remaining = header_u64(headers, "x-ratelimit-remaining")
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let rate_limit_used = header_u64(headers, "x-ratelimit-used")
+        .map(|value| value.to_string())
+        .unwrap_or_default();
     set_api_state(conn, "last_response_at", Utc::now().to_rfc3339())?;
     set_api_state(conn, "last_status", status.to_string())?;
     set_api_state(conn, "retry_after", retry_after)?;
     set_api_state(conn, "error_limit_remain", remain)?;
     set_api_state(conn, "error_limit_reset", reset)?;
-    set_api_state(conn, "rate_limited", if status == 420 || status == 429 { "TRUE".to_string() } else { "FALSE".to_string() })?;
+    set_api_state(conn, "rate_limit_limit", rate_limit_limit)?;
+    set_api_state(conn, "rate_limit_remaining", rate_limit_remaining)?;
+    set_api_state(conn, "rate_limit_used", rate_limit_used)?;
+    set_api_state(
+        conn,
+        "rate_limited",
+        if status == 420 || status == 429 {
+            "TRUE".to_string()
+        } else {
+            "FALSE".to_string()
+        },
+    )?;
     set_api_state(conn, "last_url", url.to_string())?;
     Ok(())
 }
 
 fn api_state(conn: &Connection, key: &str, fallback: &str) -> String {
-    conn.query_row("select value from api_limit_state where key = ?1", params![key], |row| row.get(0)).unwrap_or_else(|_| fallback.to_string())
+    conn.query_row(
+        "select value from api_limit_state where key = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .unwrap_or_else(|_| fallback.to_string())
 }
 
 fn set_api_state(conn: &Connection, key: &str, value: String) -> Result<(), String> {
@@ -910,11 +1566,21 @@ fn optional_i64(value: String) -> Option<i64> {
 }
 
 fn setting(conn: &Connection, key: &str, fallback: &str) -> String {
-    conn.query_row("select value from settings where key = ?1", params![key], |row| row.get(0)).unwrap_or_else(|_| fallback.to_string())
+    conn.query_row(
+        "select value from settings where key = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .unwrap_or_else(|_| fallback.to_string())
 }
 
 fn app_state(conn: &Connection, key: &str) -> String {
-    conn.query_row("select value from app_state where key = ?1", params![key], |row| row.get(0)).unwrap_or_else(|_| "0".to_string())
+    conn.query_row(
+        "select value from app_state where key = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .unwrap_or_else(|_| "0".to_string())
 }
 
 fn set_app_state(conn: &Connection, key: &str, value: String) -> Result<(), String> {
@@ -922,27 +1588,132 @@ fn set_app_state(conn: &Connection, key: &str, value: String) -> Result<(), Stri
     Ok(())
 }
 
+fn get_refresh_job(conn: &Connection) -> Result<RefreshJob, String> {
+    conn.query_row(
+        "select status, kind, current_item, scanned_count, total_count, api_calls, last_error, started_at, finished_at from refresh_jobs where id = 1",
+        [],
+        |row| {
+            Ok(RefreshJob {
+                status: row.get(0)?,
+                kind: row.get(1)?,
+                current_item: row.get(2)?,
+                scanned_count: row.get(3)?,
+                total_count: row.get(4)?,
+                api_calls: row.get(5)?,
+                last_error: row.get(6)?,
+                started_at: row.get(7)?,
+                finished_at: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(to_string)?
+    .map(Ok)
+    .unwrap_or_else(|| {
+        Ok(RefreshJob {
+            status: "idle".to_string(),
+            kind: String::new(),
+            current_item: String::new(),
+            scanned_count: 0,
+            total_count: 0,
+            api_calls: 0,
+            last_error: String::new(),
+            started_at: String::new(),
+            finished_at: String::new(),
+        })
+    })
+}
+
+fn set_refresh_job(conn: &Connection, job: &RefreshJob) -> Result<(), String> {
+    conn.execute(
+        "insert into refresh_jobs(id, status, kind, current_item, scanned_count, total_count, api_calls, last_error, started_at, finished_at)
+         values (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         on conflict(id) do update set status=excluded.status, kind=excluded.kind, current_item=excluded.current_item,
+         scanned_count=excluded.scanned_count, total_count=excluded.total_count, api_calls=excluded.api_calls,
+         last_error=excluded.last_error, started_at=excluded.started_at, finished_at=excluded.finished_at",
+        params![
+            &job.status,
+            &job.kind,
+            &job.current_item,
+            job.scanned_count,
+            job.total_count,
+            job.api_calls,
+            &job.last_error,
+            &job.started_at,
+            &job.finished_at
+        ],
+    ).map_err(to_string)?;
+    Ok(())
+}
+
+fn update_refresh_job_progress(
+    conn: &Connection,
+    current_item: &str,
+    scanned_count: i64,
+    total_count: i64,
+    api_calls: i64,
+    last_error: &str,
+) -> Result<(), String> {
+    let mut job = get_refresh_job(conn)?;
+    if job.status != "running" {
+        return Ok(());
+    }
+    job.current_item = current_item.to_string();
+    job.scanned_count = scanned_count;
+    job.total_count = total_count;
+    job.api_calls = api_calls;
+    if !last_error.is_empty() {
+        job.last_error = last_error.to_string();
+    }
+    set_refresh_job(conn, &job)
+}
+
 fn get_product(conn: &Connection, type_id: i64) -> Result<Product, String> {
-    conn.query_row("select type_id, name, enabled, notes from products where type_id = ?1", params![type_id], |row| {
-        Ok(Product { type_id: row.get(0)?, name: row.get(1)?, enabled: row.get::<_, i64>(2)? != 0, notes: row.get(3)? })
-    }).map_err(to_string)
+    conn.query_row(
+        "select type_id, name, enabled, notes from products where type_id = ?1",
+        params![type_id],
+        |row| {
+            Ok(Product {
+                type_id: row.get(0)?,
+                name: row.get(1)?,
+                enabled: row.get::<_, i64>(2)? != 0,
+                notes: row.get(3)?,
+            })
+        },
+    )
+    .map_err(to_string)
 }
 
 fn enabled_products(conn: &Connection) -> Result<Vec<Product>, String> {
-    let mut stmt = conn.prepare(
-        "select p.type_id, p.name, p.enabled, p.notes
+    let mut stmt = conn
+        .prepare(
+            "select p.type_id, p.name, p.enabled, p.notes
          from products p
          left join candidate_products c on c.type_id = p.type_id
          where p.enabled = 1
-         order by c.score desc, p.rowid"
-    ).map_err(to_string)?;
-    let result = rows(stmt.query_map([], |row| {
-        Ok(Product { type_id: row.get(0)?, name: row.get(1)?, enabled: true, notes: row.get(3)? })
-    }).map_err(to_string)?)?;
+         order by c.score desc, p.rowid",
+        )
+        .map_err(to_string)?;
+    let result = rows(
+        stmt.query_map([], |row| {
+            Ok(Product {
+                type_id: row.get(0)?,
+                name: row.get(1)?,
+                enabled: true,
+                notes: row.get(3)?,
+            })
+        })
+        .map_err(to_string)?,
+    )?;
     Ok(result)
 }
 
-fn fetch_json<T: serde::de::DeserializeOwned>(conn: &Connection, url: &str, api_calls: &mut i64, error_limit_threshold: u64) -> Result<T, String> {
+fn fetch_json<T: serde::de::DeserializeOwned>(
+    conn: &Connection,
+    url: &str,
+    api_calls: &mut i64,
+    error_limit_threshold: u64,
+) -> Result<T, String> {
     *api_calls += 1;
     let response = reqwest::blocking::Client::new()
         .get(url)
@@ -986,26 +1757,50 @@ fn header_u64(headers: &reqwest::header::HeaderMap, name: &str) -> Option<u64> {
 
 fn recent_volume(rows: &[HistoryRow]) -> f64 {
     let cutoff = Utc::now().date_naive() - Duration::days(30);
-    rows.iter().filter_map(|row| {
-        chrono::NaiveDate::parse_from_str(&row.date, "%Y-%m-%d").ok().filter(|date| *date >= cutoff).map(|_| row.volume as f64)
-    }).sum()
+    rows.iter()
+        .filter_map(|row| {
+            chrono::NaiveDate::parse_from_str(&row.date, "%Y-%m-%d")
+                .ok()
+                .filter(|date| *date >= cutoff)
+                .map(|_| row.volume as f64)
+        })
+        .sum()
 }
 
-fn should_skip_low_target_volume(conn: &Connection, type_id: i64, min_volume: f64) -> Result<bool, String> {
+fn should_skip_low_target_volume(
+    conn: &Connection,
+    type_id: i64,
+    min_volume: f64,
+) -> Result<bool, String> {
     if min_volume <= 0.0 {
         return Ok(false);
     }
-    let volume: Option<f64> = conn.query_row("select sell_region_volume from opportunities where type_id = ?1", params![type_id], |row| row.get(0)).optional().map_err(to_string)?;
+    let volume: Option<f64> = conn
+        .query_row(
+            "select sell_region_volume from opportunities where type_id = ?1",
+            params![type_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(to_string)?;
     Ok(volume.map(|value| value < min_volume).unwrap_or(false))
 }
 
 fn is_cold_opportunity(row: &Opportunity, min_volume: f64) -> bool {
     row.status == "LOW TRAFFIC"
-        || (min_volume > 0.0 && row.sell_region_volume.map(|volume| volume < min_volume).unwrap_or(false))
+        || (min_volume > 0.0
+            && row
+                .sell_region_volume
+                .map(|volume| volume < min_volume)
+                .unwrap_or(false))
 }
 
 fn mark_product_cold(conn: &Connection, type_id: i64) -> Result<(), String> {
-    conn.execute("update products set enabled = 0 where type_id = ?1", params![type_id]).map_err(to_string)?;
+    conn.execute(
+        "update products set enabled = 0 where type_id = ?1",
+        params![type_id],
+    )
+    .map_err(to_string)?;
     conn.execute(
         "update candidate_products set enabled = 0, reason = 'Disabled after ESI validation: cold target market' where type_id = ?1",
         params![type_id],
@@ -1023,7 +1818,14 @@ fn upsert_opportunity(conn: &Connection, row: &Opportunity) -> Result<(), String
     Ok(())
 }
 
-fn empty_opportunity(status: &str, product: &Product, buy_volume: f64, sell_volume: f64, refreshed: String, notes: &str) -> Opportunity {
+fn empty_opportunity(
+    status: &str,
+    product: &Product,
+    buy_volume: f64,
+    sell_volume: f64,
+    refreshed: String,
+    notes: &str,
+) -> Opportunity {
     Opportunity {
         status: status.to_string(),
         direction: String::new(),
@@ -1051,9 +1853,21 @@ fn insert_run(conn: &Connection, run: RefreshRun) -> Result<(), String> {
     Ok(())
 }
 
+fn latest_refresh_run(conn: &Connection) -> Result<RefreshRun, String> {
+    conn.query_row(
+        "select refresh_time, items_scanned, opportunities_written, api_calls, errors, skipped, duration_seconds from refresh_runs order by rowid desc limit 1",
+        [],
+        refresh_run_from_row,
+    )
+    .map_err(to_string)
+}
+
 fn opportunity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Opportunity> {
     let last_refresh: Option<String> = row.get(14)?;
-    let minutes = last_refresh.as_ref().and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok()).map(|time| (Utc::now() - time.with_timezone(&Utc)).num_minutes().max(0));
+    let minutes = last_refresh
+        .as_ref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|time| (Utc::now() - time.with_timezone(&Utc)).num_minutes().max(0));
     Ok(Opportunity {
         status: row.get(0)?,
         direction: row.get(1)?,

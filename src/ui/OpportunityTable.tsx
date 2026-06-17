@@ -53,7 +53,7 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
     onColumnSizingChange: setColumnSizing,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
-    columnResizeMode: "onChange"
+    columnResizeMode: "onEnd"
   });
 
   const tableRows = table.getRowModel().rows;
