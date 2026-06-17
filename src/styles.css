@@ -338,6 +338,17 @@ th {
   background: #2b6cb0;
 }
 
+.column-resizer.is-resizing::before {
+  content: "";
+  position: absolute;
+  top: -100vh;
+  bottom: -100vh;
+  left: 3px;
+  width: 2px;
+  background: #2b6cb0;
+  box-shadow: 0 0 0 1px rgba(43, 108, 176, 0.16);
+}
+
 tbody {
   position: relative;
   display: block;

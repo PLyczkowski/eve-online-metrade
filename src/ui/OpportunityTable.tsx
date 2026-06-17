@@ -36,6 +36,7 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
     { accessorKey: "sellReference", header: "Sell Ref", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "spread", header: "Spread", size: 95, cell: ({ getValue }) => formatPercent(getValue<number | null>()) },
     { accessorKey: "sourceAvailable", header: "Source Avail", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "suggestedBuyQuantity", header: "Suggested Buy", size: 125, cell: ({ getValue }) => formatQuantity(getValue<number | null>()) },
     { accessorKey: "estimatedProfit", header: "Est. Profit", size: 130, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "cargoUsedPercent", header: "Cargo Used", size: 115, cell: ({ getValue }) => formatPercent(getValue<number | null>()) },
     { accessorKey: "myDestinationSellQuantity", header: "My Dest Qty", size: 120, cell: ({ getValue }) => formatQuantity(getValue<number | null>()) },
@@ -95,6 +96,11 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
                     </button>
                     <div
                       className={`column-resizer ${header.column.getIsResizing() ? "is-resizing" : ""}`}
+                      style={{
+                        transform: header.column.getIsResizing()
+                          ? `translateX(${table.getState().columnSizingInfo.deltaOffset ?? 0}px)`
+                          : undefined
+                      }}
                       onMouseDown={header.getResizeHandler()}
                       onTouchStart={header.getResizeHandler()}
                       title="Drag to resize column"
@@ -152,6 +158,7 @@ function cellColor(columnId: string, row: Opportunity): CSSProperties {
     if (row.direction === "Amarr -> Jita") return { backgroundColor: "#ffedd5" };
   }
   if (columnId === "spread") return { backgroundColor: greenScale(row.spread ?? 0, 0.2, 1.0) };
+  if (columnId === "suggestedBuyQuantity") return row.suggestedBuyQuantity ? { backgroundColor: "#ecfccb" } : {};
   if (columnId === "estimatedProfit") return { backgroundColor: greenScale(row.estimatedProfit ?? 0, 500000, 100000000) };
   if (columnId === "cargoUsedPercent") return { backgroundColor: greenScale(row.cargoUsedPercent ?? 0, 0.25, 1.0) };
   if (columnId === "myDestinationSellQuantity") {

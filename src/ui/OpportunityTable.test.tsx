@@ -18,6 +18,7 @@ const row: Opportunity = {
   sourceAvailable: 93,
   estimatedProfit: 4092000,
   cargoUsedPercent: 0.42,
+  suggestedBuyQuantity: 93,
   myDestinationSellPriceMin: null,
   myDestinationSellPriceMax: null,
   myDestinationSellQuantity: null,

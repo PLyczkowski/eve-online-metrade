@@ -22,8 +22,8 @@ describe("analyzeOpportunity", () => {
       refreshedAt: "2026-06-17T12:00:00Z",
       forgeOrders: [order(defaultMarketConfig.jitaStationId, 100, 10000)],
       domainOrders: [order(defaultMarketConfig.amarrStationId, 160, 10000)],
-      forgeVolume: 100,
-      domainVolume: 100
+      forgeVolume: 100000,
+      domainVolume: 100000
     });
 
     expect(row.status).toBe("GOOD");
@@ -39,8 +39,8 @@ describe("analyzeOpportunity", () => {
       refreshedAt: "2026-06-17T12:00:00Z",
       forgeOrders: [order(defaultMarketConfig.jitaStationId, 220, 10000)],
       domainOrders: [order(defaultMarketConfig.amarrStationId, 100, 10000)],
-      forgeVolume: 100,
-      domainVolume: 100
+      forgeVolume: 100000,
+      domainVolume: 100000
     });
 
     expect(row.status).toBe("GOOD");
@@ -123,6 +123,22 @@ describe("analyzeOpportunity", () => {
     expect(row.sourceAvailable).toBe(100);
     expect(row.estimatedProfit).toBe(500);
     expect(row.cargoUsedPercent).toBe(1);
+    expect(row.suggestedBuyQuantity).toBe(5);
+  });
+
+  it("caps suggested buy by destination 30-day volume share", () => {
+    const row = analyzeOpportunity({
+      product: { ...product, volumeM3: 1 },
+      config: { ...defaultMarketConfig, minimumEstimatedProfit: 1, suggestedBuyDestinationVolumePercent: 0.3 },
+      refreshedAt: "2026-06-17T12:00:00Z",
+      forgeOrders: [order(defaultMarketConfig.jitaStationId, 100, 1000)],
+      domainOrders: [order(defaultMarketConfig.amarrStationId, 200, 1000)],
+      forgeVolume: 1000,
+      domainVolume: 20
+    });
+
+    expect(row.suggestedBuyQuantity).toBe(6);
+    expect(row.estimatedProfit).toBe(600);
   });
 });
 

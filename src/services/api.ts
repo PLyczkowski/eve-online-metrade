@@ -239,6 +239,7 @@ function pendingOpportunity(product: Product): Opportunity {
     sourceAvailable: null,
     estimatedProfit: null,
     cargoUsedPercent: null,
+    suggestedBuyQuantity: null,
     myDestinationSellPriceMin: null,
     myDestinationSellPriceMax: null,
     myDestinationSellQuantity: null,
@@ -456,7 +457,8 @@ async function fetchAndAnalyze(product: Product, store: StoreShape): Promise<Opp
     minimumDestinationVolume: Number(settingValue(store, "Minimum 30d destination volume", "1")),
     sellReferenceMinimumUnits: Number(settingValue(store, "Sell reference minimum units", "5")),
     sellReferenceMinimumIskDepth: Number(settingValue(store, "Sell reference minimum ISK depth", "25000000")),
-    shipCargoCapacityM3: Number(settingValue(store, "Ship cargo capacity m3", "7900"))
+    shipCargoCapacityM3: Number(settingValue(store, "Ship cargo capacity m3", "7900")),
+    suggestedBuyDestinationVolumePercent: Number(settingValue(store, "Suggested buy max destination 30d volume percent", "0.3"))
   };
 
   return analyzeOpportunity({

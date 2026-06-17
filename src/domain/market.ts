@@ -31,7 +31,8 @@ export const defaultMarketConfig: MarketConfig = {
   includeWeakRows: true,
   sellReferenceMinimumUnits: 5,
   sellReferenceMinimumIskDepth: 25000000,
-  shipCargoCapacityM3: 7900
+  shipCargoCapacityM3: 7900,
+  suggestedBuyDestinationVolumePercent: 0.3
 };
 
 export function recentVolume(history: MarketHistoryRow[], days: number, now = new Date()): number {
@@ -68,9 +69,10 @@ export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
   const spread = buyPrice > 0 ? profitPerUnit / buyPrice : 0;
   const sourceAvailable = buyHub.availableAtLowest;
   const cargoUnits = cargoUnitCapacity(config.shipCargoCapacityM3, product.volumeM3 ?? null);
-  const estimatedUnits = cargoUnits === null ? sourceAvailable : Math.min(sourceAvailable, cargoUnits);
-  const estimatedProfit = Math.max(0, estimatedUnits * profitPerUnit);
-  const cargoUsedPercent = cargoUsedFraction(config.shipCargoCapacityM3, product.volumeM3 ?? null, estimatedUnits);
+  const destinationVolumeUnits = Math.floor(sellHub.volume * Math.max(0, Math.min(1, config.suggestedBuyDestinationVolumePercent)));
+  const suggestedBuyQuantity = suggestedBuyUnits(sourceAvailable, cargoUnits, destinationVolumeUnits);
+  const estimatedProfit = Math.max(0, suggestedBuyQuantity * profitPerUnit);
+  const cargoUsedPercent = cargoUsedFraction(config.shipCargoCapacityM3, product.volumeM3 ?? null, suggestedBuyQuantity);
 
   let status: Opportunity["status"] = "GOOD";
   let scriptNotes = "Both prices are sell orders; direction is chosen from lower sell price to higher sell price.";
@@ -103,6 +105,7 @@ export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
     sourceAvailable,
     estimatedProfit,
     cargoUsedPercent,
+    suggestedBuyQuantity,
     myDestinationSellPriceMin: null,
     myDestinationSellPriceMax: null,
     myDestinationSellQuantity: null,
@@ -154,6 +157,11 @@ function cargoUnitCapacity(cargoM3: number, volumeM3: number | null): number | n
   return Math.max(0, Math.floor(cargoM3 / volumeM3));
 }
 
+function suggestedBuyUnits(sourceAvailable: number, cargoUnits: number | null, destinationVolumeUnits: number): number {
+  const cap = cargoUnits === null ? sourceAvailable : Math.min(sourceAvailable, cargoUnits);
+  return Math.max(0, Math.floor(Math.min(cap, destinationVolumeUnits)));
+}
+
 function cargoUsedFraction(cargoM3: number, volumeM3: number | null, estimatedUnits: number): number | null {
   if (!volumeM3 || volumeM3 <= 0 || cargoM3 <= 0) return null;
   return Math.min(1, Math.max(0, (estimatedUnits * volumeM3) / cargoM3));
@@ -184,6 +192,7 @@ function emptyMarketRow(
     sourceAvailable: null,
     estimatedProfit: null,
     cargoUsedPercent: null,
+    suggestedBuyQuantity: null,
     myDestinationSellPriceMin: null,
     myDestinationSellPriceMax: null,
     myDestinationSellQuantity: null,

@@ -50,6 +50,7 @@ export interface Opportunity {
   sourceAvailable: number | null;
   estimatedProfit: number | null;
   cargoUsedPercent: number | null;
+  suggestedBuyQuantity: number | null;
   myDestinationSellPriceMin: number | null;
   myDestinationSellPriceMax: number | null;
   myDestinationSellQuantity: number | null;
@@ -178,6 +179,7 @@ export interface MarketConfig {
   sellReferenceMinimumUnits: number;
   sellReferenceMinimumIskDepth: number;
   shipCargoCapacityM3: number;
+  suggestedBuyDestinationVolumePercent: number;
 }
 
 export interface AnalyzeInput {
