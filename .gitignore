@@ -4,5 +4,6 @@ target/
 src-tauri/target/
 .vite-dev*.log
 .tauri-dev*.log
+launcher.log
 *.sqlite3
 *.db
