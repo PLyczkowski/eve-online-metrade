@@ -89,6 +89,40 @@ describe("analyzeOpportunity", () => {
 
     expect(row.status).toBe("LOW TRAFFIC");
   });
+
+  it("uses a depth-based sell reference to avoid one-off sell order skew", () => {
+    const row = analyzeOpportunity({
+      product,
+      config: { ...defaultMarketConfig, minimumEstimatedProfit: 1, sellReferenceMinimumUnits: 5, sellReferenceMinimumIskDepth: 1000000000000 },
+      refreshedAt: "2026-06-17T12:00:00Z",
+      forgeOrders: [order(defaultMarketConfig.jitaStationId, 100, 100)],
+      domainOrders: [
+        order(defaultMarketConfig.amarrStationId, 101, 1),
+        order(defaultMarketConfig.amarrStationId, 150, 100)
+      ],
+      forgeVolume: 100,
+      domainVolume: 100
+    });
+
+    expect(row.direction).toBe("Jita -> Amarr");
+    expect(row.sellReference).toBe(150);
+    expect(row.profitPerUnit).toBe(50);
+  });
+
+  it("caps estimated profit by ship cargo capacity", () => {
+    const row = analyzeOpportunity({
+      product: { ...product, volumeM3: 10 },
+      config: { ...defaultMarketConfig, minimumEstimatedProfit: 1, shipCargoCapacityM3: 50 },
+      refreshedAt: "2026-06-17T12:00:00Z",
+      forgeOrders: [order(defaultMarketConfig.jitaStationId, 100, 100)],
+      domainOrders: [order(defaultMarketConfig.amarrStationId, 200, 100)],
+      forgeVolume: 100,
+      domainVolume: 100
+    });
+
+    expect(row.sourceAvailable).toBe(100);
+    expect(row.estimatedProfit).toBe(500);
+  });
 });
 
 describe("shouldSkipLowTargetVolume", () => {

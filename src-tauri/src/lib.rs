@@ -142,6 +142,19 @@ struct HistoryRow {
 #[derive(Debug, Deserialize)]
 struct EsiType {
     name: String,
+    #[serde(default)]
+    volume: Option<f64>,
+}
+
+struct ProductMetadata {
+    product: Product,
+    volume_m3: Option<f64>,
+}
+
+struct HubPrices {
+    lowest_sell: f64,
+    reference_sell: f64,
+    available_at_lowest: f64,
 }
 
 pub fn run() {
@@ -901,7 +914,8 @@ fn fetch_and_analyze(
     let error_limit_threshold = setting(conn, "ESI low error-limit threshold", "20")
         .parse::<u64>()
         .unwrap_or(20);
-    let product = product_with_name(conn, product, &base, api_calls, error_limit_threshold);
+    let metadata = product_with_metadata(conn, product, &base, api_calls, error_limit_threshold);
+    let product = metadata.product;
     let forge_orders: Vec<EsiOrder> = fetch_json(
         conn,
         &format!(
@@ -941,6 +955,7 @@ fn fetch_and_analyze(
     Ok(analyze(
         conn,
         &product,
+        metadata.volume_m3,
         forge_orders,
         domain_orders,
         recent_volume(&forge_history),
@@ -948,15 +963,28 @@ fn fetch_and_analyze(
     ))
 }
 
-fn product_with_name(
+fn product_with_metadata(
     conn: &Connection,
     product: &Product,
     base: &str,
     api_calls: &mut i64,
     error_limit_threshold: u64,
-) -> Product {
-    if !product.name.trim().is_empty() {
-        return product.clone();
+) -> ProductMetadata {
+    let cached_volume = conn
+        .query_row(
+            "select volume_m3 from item_metadata where type_id = ?1",
+            params![product.type_id],
+            |row| row.get::<_, Option<f64>>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .flatten();
+    if !product.name.trim().is_empty() && cached_volume.is_some() {
+        return ProductMetadata {
+            product: product.clone(),
+            volume_m3: cached_volume,
+        };
     }
     let mut named = product.clone();
     if let Ok(type_info) = fetch_json::<EsiType>(
@@ -968,22 +996,39 @@ fn product_with_name(
         api_calls,
         error_limit_threshold,
     ) {
-        named.name = type_info.name.trim().to_string();
-        let _ = conn.execute(
-            "update products set name = ?1 where type_id = ?2",
-            params![named.name, named.type_id],
-        );
-        let _ = conn.execute(
-            "update opportunities set item_name = ?1 where type_id = ?2 and item_name = ''",
-            params![named.name, named.type_id],
-        );
+        if !type_info.name.trim().is_empty() {
+            named.name = type_info.name.trim().to_string();
+            let _ = conn.execute(
+                "update products set name = ?1 where type_id = ?2",
+                params![named.name, named.type_id],
+            );
+            let _ = conn.execute(
+                "update opportunities set item_name = ?1 where type_id = ?2 and item_name = ''",
+                params![named.name, named.type_id],
+            );
+        }
+        if let Some(volume) = type_info.volume {
+            let _ = conn.execute(
+                "insert into item_metadata(type_id, volume_m3, source_updated_at) values (?1, ?2, ?3)
+                 on conflict(type_id) do update set volume_m3 = excluded.volume_m3, source_updated_at = excluded.source_updated_at",
+                params![named.type_id, volume, Utc::now().to_rfc3339()],
+            );
+            return ProductMetadata {
+                product: named,
+                volume_m3: Some(volume),
+            };
+        }
     }
-    named
+    ProductMetadata {
+        product: named,
+        volume_m3: cached_volume,
+    }
 }
 
 fn analyze(
     conn: &Connection,
     product: &Product,
+    volume_m3: Option<f64>,
     forge_orders: Vec<EsiOrder>,
     domain_orders: Vec<EsiOrder>,
     forge_volume: f64,
@@ -1007,6 +1052,18 @@ fn analyze(
     let min_dest_volume = setting(conn, "Minimum 30d destination volume", "1")
         .parse::<f64>()
         .unwrap_or(1.0);
+    let sell_ref_min_units = setting(conn, "Sell reference minimum units", "5")
+        .parse::<f64>()
+        .unwrap_or(5.0)
+        .max(1.0);
+    let sell_ref_min_isk = setting(conn, "Sell reference minimum ISK depth", "25000000")
+        .parse::<f64>()
+        .unwrap_or(25000000.0)
+        .max(0.0);
+    let cargo_m3 = setting(conn, "Ship cargo capacity m3", "60000")
+        .parse::<f64>()
+        .unwrap_or(60000.0)
+        .max(0.0);
     let refreshed = Utc::now().to_rfc3339();
     let mut jita_sells: Vec<&EsiOrder> = forge_orders
         .iter()
@@ -1018,9 +1075,9 @@ fn analyze(
         .collect();
     jita_sells.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
     amarr_sells.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
-    let jita_low = jita_sells.first().map(|order| order.price).unwrap_or(0.0);
-    let amarr_low = amarr_sells.first().map(|order| order.price).unwrap_or(0.0);
-    if jita_low == 0.0 && amarr_low == 0.0 {
+    let jita_prices = hub_prices(&jita_sells, sell_ref_min_units, sell_ref_min_isk);
+    let amarr_prices = hub_prices(&amarr_sells, sell_ref_min_units, sell_ref_min_isk);
+    if jita_prices.lowest_sell == 0.0 && amarr_prices.lowest_sell == 0.0 {
         return empty_opportunity(
             "NO SELL ORDERS",
             product,
@@ -1030,7 +1087,7 @@ fn analyze(
             "No sell orders at either hub station",
         );
     }
-    if jita_low == 0.0 {
+    if jita_prices.lowest_sell == 0.0 {
         return empty_opportunity(
             "NO JITA SELL",
             product,
@@ -1040,7 +1097,7 @@ fn analyze(
             "No Jita sell orders at hub station",
         );
     }
-    if amarr_low == 0.0 {
+    if amarr_prices.lowest_sell == 0.0 {
         return empty_opportunity(
             "NO AMARR SELL",
             product,
@@ -1050,10 +1107,28 @@ fn analyze(
             "No Amarr sell orders at hub station",
         );
     }
-    let (buy_hub, sell_hub, buy_price, sell_reference, source_available, buy_volume, sell_volume): (&str, &str, f64, f64, f64, f64, f64) = if jita_low <= amarr_low {
-        ("Jita", "Amarr", jita_low, amarr_low, jita_sells.iter().filter(|order| order.price <= jita_low).map(|order| order.volume_remain).sum(), forge_volume, domain_volume)
+    let jita_to_amarr_profit = amarr_prices.reference_sell - jita_prices.lowest_sell;
+    let amarr_to_jita_profit = jita_prices.reference_sell - amarr_prices.lowest_sell;
+    let (buy_hub, sell_hub, buy_price, sell_reference, source_available, buy_volume, sell_volume): (&str, &str, f64, f64, f64, f64, f64) = if jita_to_amarr_profit >= amarr_to_jita_profit {
+        (
+            "Jita",
+            "Amarr",
+            jita_prices.lowest_sell,
+            amarr_prices.reference_sell,
+            jita_prices.available_at_lowest,
+            forge_volume,
+            domain_volume,
+        )
     } else {
-        ("Amarr", "Jita", amarr_low, jita_low, amarr_sells.iter().filter(|order| order.price <= amarr_low).map(|order| order.volume_remain).sum(), domain_volume, forge_volume)
+        (
+            "Amarr",
+            "Jita",
+            amarr_prices.lowest_sell,
+            jita_prices.reference_sell,
+            amarr_prices.available_at_lowest,
+            domain_volume,
+            forge_volume,
+        )
     };
     let profit = sell_reference - buy_price;
     let spread = if buy_price > 0.0 {
@@ -1061,9 +1136,16 @@ fn analyze(
     } else {
         0.0
     };
-    let estimated_profit: f64 = (source_available * profit).max(0.0);
+    let cargo_units = cargo_unit_capacity(cargo_m3, volume_m3);
+    let estimated_units = cargo_units
+        .map(|units| source_available.min(units))
+        .unwrap_or(source_available);
+    let estimated_profit: f64 = (estimated_units * profit).max(0.0);
     let (status, script_notes) = if profit <= 0.0 {
-        ("NO SPREAD", "Lowest sell prices are equal or inverted.")
+        (
+            "NO SPREAD",
+            "Depth-adjusted sell reference is equal or inverted.",
+        )
     } else if spread < min_spread {
         ("LOW SPREAD", "Below minimum spread.")
     } else if estimated_profit < min_profit {
@@ -1071,7 +1153,7 @@ fn analyze(
     } else if buy_volume < min_source_volume || sell_volume < min_dest_volume {
         ("LOW TRAFFIC", "Below recent regional volume threshold.")
     } else {
-        ("GOOD", "Both prices are sell orders; direction is chosen from lower sell price to higher sell price.")
+        ("GOOD", "Sell reference uses market depth to reduce one-off order skew; profit is capped by source units and cargo space.")
     };
     Opportunity {
         status: status.to_string(),
@@ -1095,12 +1177,60 @@ fn analyze(
     }
 }
 
+fn hub_prices(orders: &[&EsiOrder], min_units: f64, min_isk_depth: f64) -> HubPrices {
+    let lowest_sell = orders.first().map(|order| order.price).unwrap_or(0.0);
+    if lowest_sell <= 0.0 {
+        return HubPrices {
+            lowest_sell: 0.0,
+            reference_sell: 0.0,
+            available_at_lowest: 0.0,
+        };
+    }
+    let available_at_lowest = orders
+        .iter()
+        .filter(|order| order.price <= lowest_sell)
+        .map(|order| order.volume_remain)
+        .sum();
+    let mut cumulative_units = 0.0;
+    let mut cumulative_value = 0.0;
+    for order in orders {
+        cumulative_units += order.volume_remain.max(0.0);
+        cumulative_value += order.volume_remain.max(0.0) * order.price.max(0.0);
+        if cumulative_units >= min_units
+            || (min_isk_depth > 0.0 && cumulative_value >= min_isk_depth)
+        {
+            return HubPrices {
+                lowest_sell,
+                reference_sell: order.price,
+                available_at_lowest,
+            };
+        }
+    }
+    HubPrices {
+        lowest_sell,
+        reference_sell: orders
+            .last()
+            .map(|order| order.price)
+            .unwrap_or(lowest_sell),
+        available_at_lowest,
+    }
+}
+
+fn cargo_unit_capacity(cargo_m3: f64, volume_m3: Option<f64>) -> Option<f64> {
+    let volume = volume_m3?;
+    if cargo_m3 <= 0.0 || volume <= 0.0 {
+        return None;
+    }
+    Some((cargo_m3 / volume).floor().max(0.0))
+}
+
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
         create table if not exists products(type_id integer primary key, name text not null, enabled integer not null, notes text not null);
         create table if not exists settings(key text primary key, value text not null, notes text not null);
         create table if not exists item_types(type_id integer primary key, name text not null, source text not null, source_updated_at text not null);
+        create table if not exists item_metadata(type_id integer primary key, volume_m3 real, source_updated_at text not null);
         create table if not exists market_aggregates(
           region_id integer not null, type_id integer not null, is_buy integer not null,
           weighted_average real not null, max_price real not null, min_price real not null, stddev real not null,
@@ -1182,6 +1312,21 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "Auto-disable cold items",
             "TRUE",
             "After ESI validation, cold/low-traffic items are disabled to avoid future calls.",
+        ),
+        (
+            "Sell reference minimum units",
+            "5",
+            "Use the first sell price level that reaches this cumulative unit depth.",
+        ),
+        (
+            "Sell reference minimum ISK depth",
+            "25000000",
+            "Use this cumulative ISK depth as an alternate sell-reference threshold.",
+        ),
+        (
+            "Ship cargo capacity m3",
+            "60000",
+            "Maximum cargo volume used to cap estimated profit.",
         ),
     ];
     for row in discovery_settings {
@@ -1304,6 +1449,21 @@ fn seed(conn: &Connection) -> rusqlite::Result<()> {
             "Auto-disable cold items",
             "TRUE",
             "After ESI validation, cold/low-traffic items are disabled to avoid future calls.",
+        ),
+        (
+            "Sell reference minimum units",
+            "5",
+            "Use the first sell price level that reaches this cumulative unit depth.",
+        ),
+        (
+            "Sell reference minimum ISK depth",
+            "25000000",
+            "Use this cumulative ISK depth as an alternate sell-reference threshold.",
+        ),
+        (
+            "Ship cargo capacity m3",
+            "60000",
+            "Maximum cargo volume used to cap estimated profit.",
         ),
         (
             "Skip refresh if target 30d volume below",

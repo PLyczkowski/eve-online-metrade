@@ -17,6 +17,7 @@ export interface Product {
   name: string;
   enabled: boolean;
   notes: string;
+  volumeM3?: number | null;
 }
 
 export interface Setting {
@@ -127,6 +128,9 @@ export interface MarketConfig {
   minimumDestinationVolume: number;
   historyDays: number;
   includeWeakRows: boolean;
+  sellReferenceMinimumUnits: number;
+  sellReferenceMinimumIskDepth: number;
+  shipCargoCapacityM3: number;
 }
 
 export interface AnalyzeInput {

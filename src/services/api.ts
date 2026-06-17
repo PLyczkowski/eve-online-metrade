@@ -375,7 +375,10 @@ async function fetchAndAnalyze(product: Product, store: StoreShape): Promise<Opp
     minimumSpread: Number(settingValue(store, "Minimum spread", "0.2")),
     minimumEstimatedProfit: Number(settingValue(store, "Minimum estimated profit", "500000")),
     minimumSourceVolume: Number(settingValue(store, "Minimum 30d source volume", "1")),
-    minimumDestinationVolume: Number(settingValue(store, "Minimum 30d destination volume", "1"))
+    minimumDestinationVolume: Number(settingValue(store, "Minimum 30d destination volume", "1")),
+    sellReferenceMinimumUnits: Number(settingValue(store, "Sell reference minimum units", "5")),
+    sellReferenceMinimumIskDepth: Number(settingValue(store, "Sell reference minimum ISK depth", "25000000")),
+    shipCargoCapacityM3: Number(settingValue(store, "Ship cargo capacity m3", "60000"))
   };
 
   return analyzeOpportunity({

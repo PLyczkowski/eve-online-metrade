@@ -13,6 +13,8 @@ interface HubData {
   regionId: number;
   sells: Order[];
   lowestSell: number;
+  referenceSell: number;
+  availableAtLowest: number;
   volume: number;
 }
 
@@ -26,7 +28,10 @@ export const defaultMarketConfig: MarketConfig = {
   minimumSourceVolume: 1,
   minimumDestinationVolume: 1,
   historyDays: 30,
-  includeWeakRows: true
+  includeWeakRows: true,
+  sellReferenceMinimumUnits: 5,
+  sellReferenceMinimumIskDepth: 25000000,
+  shipCargoCapacityM3: 60000
 };
 
 export function recentVolume(history: MarketHistoryRow[], days: number, now = new Date()): number {
@@ -40,8 +45,8 @@ export function recentVolume(history: MarketHistoryRow[], days: number, now = ne
 
 export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
   const { product, forgeOrders, domainOrders, forgeVolume, domainVolume, refreshedAt, config } = input;
-  const jita = hubSellData("Jita", config.jitaStationId, config.theForgeRegionId, forgeOrders, forgeVolume);
-  const amarr = hubSellData("Amarr", config.amarrStationId, config.domainRegionId, domainOrders, domainVolume);
+  const jita = hubSellData("Jita", config.jitaStationId, config.theForgeRegionId, forgeOrders, forgeVolume, config);
+  const amarr = hubSellData("Amarr", config.amarrStationId, config.domainRegionId, domainOrders, domainVolume, config);
 
   if (!jita.lowestSell && !amarr.lowestSell) {
     return emptyMarketRow("NO SELL ORDERS", product.typeId, product.name, jita.volume, amarr.volume, refreshedAt, "No sell orders at either hub station", product.notes);
@@ -53,22 +58,24 @@ export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
     return emptyMarketRow("NO AMARR SELL", product.typeId, product.name, jita.volume, amarr.volume, refreshedAt, "No Amarr sell orders at hub station", product.notes);
   }
 
-  const buyHub = jita.lowestSell <= amarr.lowestSell ? jita : amarr;
+  const jitaToAmarrProfit = amarr.referenceSell - jita.lowestSell;
+  const amarrToJitaProfit = jita.referenceSell - amarr.lowestSell;
+  const buyHub = jitaToAmarrProfit >= amarrToJitaProfit ? jita : amarr;
   const sellHub = buyHub === jita ? amarr : jita;
   const buyPrice = buyHub.lowestSell;
-  const sellReference = sellHub.lowestSell;
+  const sellReference = sellHub.referenceSell;
   const profitPerUnit = sellReference - buyPrice;
   const spread = buyPrice > 0 ? profitPerUnit / buyPrice : 0;
-  const sourceAvailable = buyHub.sells
-    .filter((order) => Number(order.price) <= buyPrice)
-    .reduce((sum, order) => sum + Number(order.volumeRemain || 0), 0);
-  const estimatedProfit = Math.max(0, sourceAvailable * profitPerUnit);
+  const sourceAvailable = buyHub.availableAtLowest;
+  const cargoUnits = cargoUnitCapacity(config.shipCargoCapacityM3, product.volumeM3 ?? null);
+  const estimatedUnits = cargoUnits === null ? sourceAvailable : Math.min(sourceAvailable, cargoUnits);
+  const estimatedProfit = Math.max(0, estimatedUnits * profitPerUnit);
 
   let status: Opportunity["status"] = "GOOD";
   let scriptNotes = "Both prices are sell orders; direction is chosen from lower sell price to higher sell price.";
   if (profitPerUnit <= 0) {
     status = "NO SPREAD";
-    scriptNotes = "Lowest sell prices are equal or inverted.";
+    scriptNotes = "Depth-adjusted sell reference is equal or inverted.";
   } else if (spread < config.minimumSpread) {
     status = "LOW SPREAD";
     scriptNotes = "Below minimum spread.";
@@ -102,18 +109,42 @@ export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
   };
 }
 
-function hubSellData(name: HubName, stationId: number, regionId: number, orders: Order[], volume: number): HubData {
+function hubSellData(name: HubName, stationId: number, regionId: number, orders: Order[], volume: number, config: MarketConfig): HubData {
   const sells = orders
     .filter((order) => !order.isBuyOrder && Number(order.locationId) === Number(stationId))
     .sort((left, right) => left.price - right.price);
+  const lowestSell = sells.length ? Number(sells[0].price) : 0;
+  const depth = referenceSellPrice(sells, config.sellReferenceMinimumUnits, config.sellReferenceMinimumIskDepth);
   return {
     name,
     stationId,
     regionId,
     sells,
-    lowestSell: sells.length ? Number(sells[0].price) : 0,
+    lowestSell,
+    referenceSell: depth,
+    availableAtLowest: sells.filter((order) => Number(order.price) <= lowestSell).reduce((sum, order) => sum + Number(order.volumeRemain || 0), 0),
     volume
   };
+}
+
+function referenceSellPrice(orders: Order[], minimumUnits: number, minimumIskDepth: number): number {
+  if (!orders.length) return 0;
+  let cumulativeUnits = 0;
+  let cumulativeIsk = 0;
+  for (const order of orders) {
+    const units = Math.max(0, Number(order.volumeRemain || 0));
+    cumulativeUnits += units;
+    cumulativeIsk += units * Math.max(0, Number(order.price || 0));
+    if (cumulativeUnits >= minimumUnits || (minimumIskDepth > 0 && cumulativeIsk >= minimumIskDepth)) {
+      return Number(order.price);
+    }
+  }
+  return Number(orders[orders.length - 1].price);
+}
+
+function cargoUnitCapacity(cargoM3: number, volumeM3: number | null): number | null {
+  if (!volumeM3 || volumeM3 <= 0 || cargoM3 <= 0) return null;
+  return Math.max(0, Math.floor(cargoM3 / volumeM3));
 }
 
 function emptyMarketRow(
