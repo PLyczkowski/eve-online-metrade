@@ -49,6 +49,10 @@ export interface Opportunity {
   sourceAvailable: number | null;
   estimatedProfit: number | null;
   cargoUsedPercent: number | null;
+  myDestinationSellPriceMin: number | null;
+  myDestinationSellPriceMax: number | null;
+  myDestinationSellQuantity: number | null;
+  myDestinationSellOrderCount: number | null;
   buyRegionVolume: number | null;
   sellRegionVolume: number | null;
   lastRefresh: string | null;

@@ -69,6 +69,10 @@ struct Opportunity {
     source_available: Option<f64>,
     estimated_profit: Option<f64>,
     cargo_used_percent: Option<f64>,
+    my_destination_sell_price_min: Option<f64>,
+    my_destination_sell_price_max: Option<f64>,
+    my_destination_sell_quantity: Option<i64>,
+    my_destination_sell_order_count: Option<i64>,
     buy_region_volume: Option<f64>,
     sell_region_volume: Option<f64>,
     last_refresh: Option<String>,
@@ -389,7 +393,9 @@ fn list_auth_characters(state: State<AppState>) -> Result<Vec<AuthCharacter>, St
 fn list_auth_events(state: State<AppState>) -> Result<Vec<AuthEvent>, String> {
     let conn = open(&state)?;
     let mut stmt = conn
-        .prepare("select happened_at, status, message from auth_events order by rowid desc limit 20")
+        .prepare(
+            "select happened_at, status, message from auth_events order by rowid desc limit 20",
+        )
         .map_err(to_string)?;
     let result = rows(
         stmt.query_map([], |row| {
@@ -466,6 +472,10 @@ fn list_opportunities(
                         then min(1.0, max(0.0, (o.source_available * m.volume_m3) / ?1))
                     end
                 ),
+                my_orders.price_min,
+                my_orders.price_max,
+                my_orders.quantity,
+                my_orders.order_count,
                 o.buy_region_volume,
                 o.sell_region_volume,
                 o.last_refresh,
@@ -474,6 +484,18 @@ fn list_opportunities(
          from products p
          left join opportunities o on o.type_id = p.type_id
          left join item_metadata m on m.type_id = p.type_id
+         left join trade_hubs sell_hub on sell_hub.name = o.sell_hub
+         left join (
+             select type_id,
+                    location_id,
+                    min(price) as price_min,
+                    max(price) as price_max,
+                    sum(volume_remain) as quantity,
+                    count(*) as order_count
+             from character_orders
+             where is_buy_order = 0 and state = 'open'
+             group by type_id, location_id
+         ) my_orders on my_orders.type_id = p.type_id and my_orders.location_id = sell_hub.station_id
          where p.enabled = 1",
         )
         .map_err(to_string)?;
@@ -1355,6 +1377,10 @@ fn analyze(
         source_available: Some(source_available),
         estimated_profit: Some(estimated_profit),
         cargo_used_percent,
+        my_destination_sell_price_min: None,
+        my_destination_sell_price_max: None,
+        my_destination_sell_quantity: None,
+        my_destination_sell_order_count: None,
         buy_region_volume: Some(buy_volume),
         sell_region_volume: Some(sell_volume),
         last_refresh: Some(refreshed),
@@ -2034,7 +2060,11 @@ fn start_eve_login_inner(conn: &Connection) -> Result<AuthCharacter, String> {
             .get("error_description")
             .map(|value| format!(": {}", value))
             .unwrap_or_default();
-        let _ = log_auth_event(conn, "failed", format!("EVE login failed: {}{}", error, description));
+        let _ = log_auth_event(
+            conn,
+            "failed",
+            format!("EVE login failed: {}{}", error, description),
+        );
         return Err(format!("EVE login failed: {}", error));
     }
     let code = callback
@@ -2926,6 +2956,10 @@ fn empty_opportunity(
         source_available: None,
         estimated_profit: None,
         cargo_used_percent: None,
+        my_destination_sell_price_min: None,
+        my_destination_sell_price_max: None,
+        my_destination_sell_quantity: None,
+        my_destination_sell_order_count: None,
         buy_region_volume: Some(buy_volume),
         sell_region_volume: Some(sell_volume),
         last_refresh: Some(refreshed),
@@ -2950,7 +2984,7 @@ fn latest_refresh_run(conn: &Connection) -> Result<RefreshRun, String> {
 }
 
 fn opportunity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Opportunity> {
-    let last_refresh: Option<String> = row.get(15)?;
+    let last_refresh: Option<String> = row.get(19)?;
     let minutes = last_refresh
         .as_ref()
         .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
@@ -2969,12 +3003,16 @@ fn opportunity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Opportunity
         source_available: row.get(10)?,
         estimated_profit: row.get(11)?,
         cargo_used_percent: row.get(12)?,
-        buy_region_volume: row.get(13)?,
-        sell_region_volume: row.get(14)?,
+        my_destination_sell_price_min: row.get(13)?,
+        my_destination_sell_price_max: row.get(14)?,
+        my_destination_sell_quantity: row.get(15)?,
+        my_destination_sell_order_count: row.get(16)?,
+        buy_region_volume: row.get(17)?,
+        sell_region_volume: row.get(18)?,
         last_refresh,
         last_refresh_minutes: minutes,
-        notes: row.get(16)?,
-        script_notes: row.get(17)?,
+        notes: row.get(20)?,
+        script_notes: row.get(21)?,
     })
 }
 

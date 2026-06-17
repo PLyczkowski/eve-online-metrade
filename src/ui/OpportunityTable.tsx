@@ -34,16 +34,16 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
     { accessorKey: "sellHub", header: "Sell Hub", size: 90 },
     { accessorKey: "buyPrice", header: "Buy Price", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "sellReference", header: "Sell Ref", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
-    { accessorKey: "profitPerUnit", header: "Profit / Unit", size: 130, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "spread", header: "Spread", size: 95, cell: ({ getValue }) => formatPercent(getValue<number | null>()) },
     { accessorKey: "sourceAvailable", header: "Source Avail", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "estimatedProfit", header: "Est. Profit", size: 130, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "cargoUsedPercent", header: "Cargo Used", size: 115, cell: ({ getValue }) => formatPercent(getValue<number | null>()) },
+    { accessorKey: "myDestinationSellQuantity", header: "My Dest Qty", size: 120, cell: ({ getValue }) => formatQuantity(getValue<number | null>()) },
+    { id: "myDestinationSellPrice", header: "My Dest Price", size: 140, cell: ({ row }) => formatPriceRange(row.original.myDestinationSellPriceMin, row.original.myDestinationSellPriceMax) },
     { accessorKey: "buyRegionVolume", header: "Buy 30d Vol", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "sellRegionVolume", header: "Sell 30d Vol", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "lastRefreshMinutes", header: "Last Refresh", size: 120, cell: ({ getValue }) => getValue<number | null>() === null ? "" : `${getValue<number>()} min ago` },
-    { accessorKey: "notes", header: "My Notes", size: 180 },
-    { accessorKey: "scriptNotes", header: "Script Notes", size: 250 }
+    { accessorKey: "notes", header: "My Notes", size: 180 }
   ], []);
 
   const table = useReactTable({
@@ -148,8 +148,24 @@ function cellColor(columnId: string, row: Opportunity): CSSProperties {
   if (columnId === "spread") return { backgroundColor: greenScale(row.spread ?? 0, 0.2, 1.0) };
   if (columnId === "estimatedProfit") return { backgroundColor: greenScale(row.estimatedProfit ?? 0, 500000, 100000000) };
   if (columnId === "cargoUsedPercent") return { backgroundColor: greenScale(row.cargoUsedPercent ?? 0, 0.25, 1.0) };
+  if (columnId === "myDestinationSellQuantity" || columnId === "myDestinationSellPrice") {
+    return row.myDestinationSellQuantity ? { backgroundColor: "#dbeafe" } : {};
+  }
   if (columnId === "lastRefreshMinutes") return { backgroundColor: refreshScale(row.lastRefreshMinutes) };
   return {};
+}
+
+function formatQuantity(value: number | null): string {
+  if (value === null || Number.isNaN(value) || value <= 0) return "";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatPriceRange(min: number | null, max: number | null): string {
+  if (min === null || Number.isNaN(min)) return "";
+  if (max !== null && !Number.isNaN(max) && max !== min) {
+    return `${formatIsk(min)} - ${formatIsk(max)}`;
+  }
+  return formatIsk(min);
 }
 
 function statusColor(status: Opportunity["status"]): string {
