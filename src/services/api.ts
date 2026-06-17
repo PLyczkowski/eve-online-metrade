@@ -219,6 +219,7 @@ function idleJob(): RefreshJob {
     totalCount: 0,
     apiCalls: 0,
     lastError: "",
+    queuedCount: 0,
     startedAt: "",
     finishedAt: ""
   };

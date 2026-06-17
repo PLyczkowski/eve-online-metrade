@@ -114,8 +114,8 @@ export function App() {
     }
   }
 
-  async function startRefreshJob(label: string, action: () => Promise<RefreshJob>) {
-    if (refreshJob?.status === "running") return;
+  async function startRefreshJob(label: string, action: () => Promise<RefreshJob>, allowQueue = false) {
+    if (refreshJob?.status === "running" && !allowQueue) return;
     setMessage(`${label} started`);
     try {
       const job = await action();
@@ -127,7 +127,7 @@ export function App() {
   }
 
   async function refreshRow(typeId: number) {
-    await startRefreshJob(`Updating ${typeId}`, () => api.startRefreshProduct(typeId));
+    await startRefreshJob(`Queued update for ${typeId}`, () => api.startRefreshProduct(typeId), true);
   }
 
   async function editNotes(typeId: number, current: string) {
@@ -395,5 +395,6 @@ function refreshProgressText(job: RefreshJob | null): string {
   if (!job) return "Refreshing...";
   const total = job.totalCount || "?";
   const current = job.currentItem ? ` - ${job.currentItem}` : "";
-  return `Refreshing ${job.kind}... ${job.scannedCount}/${total}, ${job.apiCalls} API calls${current}`;
+  const queued = job.queuedCount ? `, ${job.queuedCount} queued` : "";
+  return `Refreshing ${job.kind}... ${job.scannedCount}/${total}, ${job.apiCalls} API calls${queued}${current}`;
 }

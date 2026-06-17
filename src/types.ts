@@ -65,6 +65,7 @@ export interface RefreshJob {
   totalCount: number;
   apiCalls: number;
   lastError: string;
+  queuedCount: number;
   startedAt: string;
   finishedAt: string;
 }

@@ -82,6 +82,7 @@ struct RefreshJob {
     total_count: i64,
     api_calls: i64,
     last_error: String,
+    queued_count: i64,
     started_at: String,
     finished_at: String,
 }
@@ -422,6 +423,11 @@ fn start_refresh_job(
     let conn = open_path(db_path.clone())?;
     let current = get_refresh_job(&conn)?;
     if current.status == "running" {
+        if kind == "product" {
+            let queued_type_id = type_id.ok_or_else(|| "Missing product type ID".to_string())?;
+            enqueue_refresh_product(&conn, queued_type_id)?;
+            return get_refresh_job(&conn);
+        }
         return Ok(current);
     }
     set_refresh_job(
@@ -434,6 +440,7 @@ fn start_refresh_job(
             total_count: 0,
             api_calls: 0,
             last_error: String::new(),
+            queued_count: queued_refresh_count(&conn)?,
             started_at: Utc::now().to_rfc3339(),
             finished_at: String::new(),
         },
@@ -469,13 +476,16 @@ fn run_refresh_job(
             if !run.errors.is_empty() {
                 job.last_error = run.errors;
             }
+            job.queued_count = queued_refresh_count(&conn)?;
             job.finished_at = Utc::now().to_rfc3339();
-            set_refresh_job(&conn, &job)
+            set_refresh_job(&conn, &job)?;
+            run_queued_refresh_jobs(&conn)
         }
         Err(error) => {
             let mut job = get_refresh_job(&conn)?;
             job.status = "failed".to_string();
             job.last_error = error;
+            job.queued_count = queued_refresh_count(&conn)?;
             job.finished_at = Utc::now().to_rfc3339();
             set_refresh_job(&conn, &job)
         }
@@ -1255,13 +1265,23 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
           id integer primary key check(id = 1),
           status text not null, kind text not null, current_item text not null,
           scanned_count integer not null, total_count integer not null, api_calls integer not null,
-          last_error text not null, started_at text not null, finished_at text not null
+          last_error text not null, queued_count integer not null default 0, started_at text not null, finished_at text not null
+        );
+        create table if not exists refresh_queue(
+          id integer primary key autoincrement,
+          kind text not null,
+          type_id integer,
+          created_at text not null
         );
         create table if not exists discovery_runs(run_time text not null, item_types_imported integer not null, market_rows_imported integer not null, candidates_found integer not null, products_enabled integer not null, errors text not null, duration_seconds integer not null);
         create table if not exists app_state(key text primary key, value text not null);
         create table if not exists api_limit_state(key text primary key, value text not null);
         "
     )?;
+    let _ = conn.execute(
+        "alter table refresh_jobs add column queued_count integer not null default 0",
+        [],
+    );
     conn.execute(
         "insert into settings(key, value, notes) values ('Automatic refresh interval seconds', '600', 'Runs one batch every 10 minutes; keep this at 60 or higher for ESI safety.')
          on conflict(key) do nothing",
@@ -1750,7 +1770,7 @@ fn set_app_state(conn: &Connection, key: &str, value: String) -> Result<(), Stri
 
 fn get_refresh_job(conn: &Connection) -> Result<RefreshJob, String> {
     conn.query_row(
-        "select status, kind, current_item, scanned_count, total_count, api_calls, last_error, started_at, finished_at from refresh_jobs where id = 1",
+        "select status, kind, current_item, scanned_count, total_count, api_calls, last_error, queued_count, started_at, finished_at from refresh_jobs where id = 1",
         [],
         |row| {
             Ok(RefreshJob {
@@ -1761,8 +1781,9 @@ fn get_refresh_job(conn: &Connection) -> Result<RefreshJob, String> {
                 total_count: row.get(4)?,
                 api_calls: row.get(5)?,
                 last_error: row.get(6)?,
-                started_at: row.get(7)?,
-                finished_at: row.get(8)?,
+                queued_count: row.get(7)?,
+                started_at: row.get(8)?,
+                finished_at: row.get(9)?,
             })
         },
     )
@@ -1778,6 +1799,7 @@ fn get_refresh_job(conn: &Connection) -> Result<RefreshJob, String> {
             total_count: 0,
             api_calls: 0,
             last_error: String::new(),
+            queued_count: queued_refresh_count(conn).unwrap_or(0),
             started_at: String::new(),
             finished_at: String::new(),
         })
@@ -1786,11 +1808,11 @@ fn get_refresh_job(conn: &Connection) -> Result<RefreshJob, String> {
 
 fn set_refresh_job(conn: &Connection, job: &RefreshJob) -> Result<(), String> {
     conn.execute(
-        "insert into refresh_jobs(id, status, kind, current_item, scanned_count, total_count, api_calls, last_error, started_at, finished_at)
-         values (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "insert into refresh_jobs(id, status, kind, current_item, scanned_count, total_count, api_calls, last_error, queued_count, started_at, finished_at)
+         values (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          on conflict(id) do update set status=excluded.status, kind=excluded.kind, current_item=excluded.current_item,
          scanned_count=excluded.scanned_count, total_count=excluded.total_count, api_calls=excluded.api_calls,
-         last_error=excluded.last_error, started_at=excluded.started_at, finished_at=excluded.finished_at",
+         last_error=excluded.last_error, queued_count=excluded.queued_count, started_at=excluded.started_at, finished_at=excluded.finished_at",
         params![
             &job.status,
             &job.kind,
@@ -1799,6 +1821,7 @@ fn set_refresh_job(conn: &Connection, job: &RefreshJob) -> Result<(), String> {
             job.total_count,
             job.api_calls,
             &job.last_error,
+            job.queued_count,
             &job.started_at,
             &job.finished_at
         ],
@@ -1825,7 +1848,90 @@ fn update_refresh_job_progress(
     if !last_error.is_empty() {
         job.last_error = last_error.to_string();
     }
+    job.queued_count = queued_refresh_count(conn).unwrap_or(job.queued_count);
     set_refresh_job(conn, &job)
+}
+
+fn enqueue_refresh_product(conn: &Connection, type_id: i64) -> Result<(), String> {
+    let existing: i64 = conn
+        .query_row(
+            "select count(*) from refresh_queue where kind = 'product' and type_id = ?1",
+            params![type_id],
+            |row| row.get(0),
+        )
+        .map_err(to_string)?;
+    if existing == 0 {
+        conn.execute(
+            "insert into refresh_queue(kind, type_id, created_at) values ('product', ?1, ?2)",
+            params![type_id, Utc::now().to_rfc3339()],
+        )
+        .map_err(to_string)?;
+    }
+    let mut job = get_refresh_job(conn)?;
+    job.queued_count = queued_refresh_count(conn)?;
+    set_refresh_job(conn, &job)?;
+    Ok(())
+}
+
+fn queued_refresh_count(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("select count(*) from refresh_queue", [], |row| row.get(0))
+        .map_err(to_string)
+}
+
+fn pop_next_queued_refresh(
+    conn: &Connection,
+) -> Result<Option<(i64, String, Option<i64>)>, String> {
+    let queued = conn
+        .query_row(
+            "select id, kind, type_id from refresh_queue order by id limit 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(to_string)?;
+    if let Some((id, kind, type_id)) = queued {
+        conn.execute("delete from refresh_queue where id = ?1", params![id])
+            .map_err(to_string)?;
+        Ok(Some((id, kind, type_id)))
+    } else {
+        Ok(None)
+    }
+}
+
+fn run_queued_refresh_jobs(conn: &Connection) -> Result<(), String> {
+    loop {
+        let Some((_id, kind, type_id)) = pop_next_queued_refresh(conn)? else {
+            let mut job = get_refresh_job(conn)?;
+            job.status = "done".to_string();
+            job.kind = String::new();
+            job.current_item = String::new();
+            job.queued_count = 0;
+            job.finished_at = Utc::now().to_rfc3339();
+            set_refresh_job(conn, &job)?;
+            return Ok(());
+        };
+        let mut job = get_refresh_job(conn)?;
+        job.status = "running".to_string();
+        job.kind = kind.clone();
+        job.current_item = String::new();
+        job.scanned_count = 0;
+        job.total_count = 1;
+        job.api_calls = 0;
+        job.queued_count = queued_refresh_count(conn)?;
+        job.started_at = Utc::now().to_rfc3339();
+        job.finished_at = String::new();
+        set_refresh_job(conn, &job)?;
+
+        if kind == "product" {
+            if let Some(queued_type_id) = type_id {
+                if let Err(error) = refresh_product_inner(conn, queued_type_id) {
+                    let mut failed = get_refresh_job(conn)?;
+                    failed.last_error = format!("{}: {}", queued_type_id, error);
+                    set_refresh_job(conn, &failed)?;
+                }
+            }
+        }
+    }
 }
 
 fn get_product(conn: &Connection, type_id: i64) -> Result<Product, String> {
