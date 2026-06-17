@@ -11,6 +11,12 @@
 
 body {
   margin: 0;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#root {
+  height: 100vh;
 }
 
 button,
@@ -20,9 +26,11 @@ select {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto auto auto auto 1fr auto;
+  overflow: hidden;
 }
 
 .topbar {
