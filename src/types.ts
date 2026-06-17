@@ -39,6 +39,7 @@ export interface Opportunity {
   spread: number | null;
   sourceAvailable: number | null;
   estimatedProfit: number | null;
+  cargoUsedPercent: number | null;
   buyRegionVolume: number | null;
   sellRegionVolume: number | null;
   lastRefresh: string | null;

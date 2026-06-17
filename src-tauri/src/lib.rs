@@ -52,6 +52,7 @@ struct Opportunity {
     spread: Option<f64>,
     source_available: Option<f64>,
     estimated_profit: Option<f64>,
+    cargo_used_percent: Option<f64>,
     buy_region_volume: Option<f64>,
     sell_region_volume: Option<f64>,
     last_refresh: Option<String>,
@@ -286,6 +287,7 @@ fn list_opportunities(
                 o.spread,
                 o.source_available,
                 o.estimated_profit,
+                o.cargo_used_percent,
                 o.buy_region_volume,
                 o.sell_region_volume,
                 o.last_refresh,
@@ -1070,9 +1072,9 @@ fn analyze(
         .parse::<f64>()
         .unwrap_or(25000000.0)
         .max(0.0);
-    let cargo_m3 = setting(conn, "Ship cargo capacity m3", "60000")
+    let cargo_m3 = setting(conn, "Ship cargo capacity m3", "7900")
         .parse::<f64>()
-        .unwrap_or(60000.0)
+        .unwrap_or(7900.0)
         .max(0.0);
     let refreshed = Utc::now().to_rfc3339();
     let mut jita_sells: Vec<&EsiOrder> = forge_orders
@@ -1151,6 +1153,7 @@ fn analyze(
         .map(|units| source_available.min(units))
         .unwrap_or(source_available);
     let estimated_profit: f64 = (estimated_units * profit).max(0.0);
+    let cargo_used_percent = cargo_used_percent(cargo_m3, volume_m3, estimated_units);
     let (status, script_notes) = if profit <= 0.0 {
         (
             "NO SPREAD",
@@ -1178,6 +1181,7 @@ fn analyze(
         spread: Some(spread),
         source_available: Some(source_available),
         estimated_profit: Some(estimated_profit),
+        cargo_used_percent,
         buy_region_volume: Some(buy_volume),
         sell_region_volume: Some(sell_volume),
         last_refresh: Some(refreshed),
@@ -1234,6 +1238,14 @@ fn cargo_unit_capacity(cargo_m3: f64, volume_m3: Option<f64>) -> Option<f64> {
     Some((cargo_m3 / volume).floor().max(0.0))
 }
 
+fn cargo_used_percent(cargo_m3: f64, volume_m3: Option<f64>, estimated_units: f64) -> Option<f64> {
+    let volume = volume_m3?;
+    if cargo_m3 <= 0.0 || volume <= 0.0 {
+        return None;
+    }
+    Some(((estimated_units * volume) / cargo_m3).clamp(0.0, 1.0))
+}
+
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
@@ -1257,7 +1269,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         create table if not exists opportunities(
           type_id integer primary key, status text not null, direction text not null, item_name text not null,
           buy_hub text not null, sell_hub text not null, buy_price real, sell_reference real, profit_per_unit real,
-          spread real, source_available real, estimated_profit real, buy_region_volume real, sell_region_volume real,
+          spread real, source_available real, estimated_profit real, cargo_used_percent real, buy_region_volume real, sell_region_volume real,
           last_refresh text, notes text not null, script_notes text not null
         );
         create table if not exists refresh_runs(refresh_time text not null, items_scanned integer not null, opportunities_written integer not null, api_calls integer not null, errors text not null, skipped text not null, duration_seconds integer not null);
@@ -1282,6 +1294,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "alter table refresh_jobs add column queued_count integer not null default 0",
         [],
     );
+    let _ = conn.execute(
+        "alter table opportunities add column cargo_used_percent real",
+        [],
+    );
+    conn.execute(
+        "update settings set value = '7900' where key = 'Ship cargo capacity m3' and value = '60000'",
+        [],
+    )?;
     conn.execute(
         "insert into settings(key, value, notes) values ('Automatic refresh interval seconds', '600', 'Runs one batch every 10 minutes; keep this at 60 or higher for ESI safety.')
          on conflict(key) do nothing",
@@ -1345,7 +1365,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ),
         (
             "Ship cargo capacity m3",
-            "60000",
+            "7900",
             "Maximum cargo volume used to cap estimated profit.",
         ),
     ];
@@ -1482,7 +1502,7 @@ fn seed(conn: &Connection) -> rusqlite::Result<()> {
         ),
         (
             "Ship cargo capacity m3",
-            "60000",
+            "7900",
             "Maximum cargo volume used to cap estimated profit.",
         ),
         (
@@ -1572,8 +1592,8 @@ fn seed_initial_opportunities(conn: &Connection) -> rusqlite::Result<()> {
     ];
     for row in rows {
         conn.execute(
-            "insert into opportunities(type_id, status, direction, item_name, buy_hub, sell_hub, buy_price, sell_reference, profit_per_unit, spread, source_available, estimated_profit, buy_region_volume, sell_region_volume, last_refresh, notes, script_notes)
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, '', ?16)",
+            "insert into opportunities(type_id, status, direction, item_name, buy_hub, sell_hub, buy_price, sell_reference, profit_per_unit, spread, source_available, estimated_profit, cargo_used_percent, buy_region_volume, sell_region_volume, last_refresh, notes, script_notes)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, null, ?13, ?14, ?15, '', ?16)",
             params![row.2, row.0, row.1, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10, row.11, row.12, row.13, "2026-06-17T11:47:12+00:00", row.14],
         )?;
     }
@@ -2076,10 +2096,10 @@ fn mark_product_cold(conn: &Connection, type_id: i64) -> Result<(), String> {
 
 fn upsert_opportunity(conn: &Connection, row: &Opportunity) -> Result<(), String> {
     conn.execute(
-        "insert into opportunities(type_id, status, direction, item_name, buy_hub, sell_hub, buy_price, sell_reference, profit_per_unit, spread, source_available, estimated_profit, buy_region_volume, sell_region_volume, last_refresh, notes, script_notes)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
-         on conflict(type_id) do update set status=excluded.status, direction=excluded.direction, item_name=excluded.item_name, buy_hub=excluded.buy_hub, sell_hub=excluded.sell_hub, buy_price=excluded.buy_price, sell_reference=excluded.sell_reference, profit_per_unit=excluded.profit_per_unit, spread=excluded.spread, source_available=excluded.source_available, estimated_profit=excluded.estimated_profit, buy_region_volume=excluded.buy_region_volume, sell_region_volume=excluded.sell_region_volume, last_refresh=excluded.last_refresh, notes=excluded.notes, script_notes=excluded.script_notes",
-        params![row.type_id, row.status, row.direction, row.item_name, row.buy_hub, row.sell_hub, row.buy_price, row.sell_reference, row.profit_per_unit, row.spread, row.source_available, row.estimated_profit, row.buy_region_volume, row.sell_region_volume, row.last_refresh, row.notes, row.script_notes],
+        "insert into opportunities(type_id, status, direction, item_name, buy_hub, sell_hub, buy_price, sell_reference, profit_per_unit, spread, source_available, estimated_profit, cargo_used_percent, buy_region_volume, sell_region_volume, last_refresh, notes, script_notes)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+         on conflict(type_id) do update set status=excluded.status, direction=excluded.direction, item_name=excluded.item_name, buy_hub=excluded.buy_hub, sell_hub=excluded.sell_hub, buy_price=excluded.buy_price, sell_reference=excluded.sell_reference, profit_per_unit=excluded.profit_per_unit, spread=excluded.spread, source_available=excluded.source_available, estimated_profit=excluded.estimated_profit, cargo_used_percent=excluded.cargo_used_percent, buy_region_volume=excluded.buy_region_volume, sell_region_volume=excluded.sell_region_volume, last_refresh=excluded.last_refresh, notes=excluded.notes, script_notes=excluded.script_notes",
+        params![row.type_id, row.status, row.direction, row.item_name, row.buy_hub, row.sell_hub, row.buy_price, row.sell_reference, row.profit_per_unit, row.spread, row.source_available, row.estimated_profit, row.cargo_used_percent, row.buy_region_volume, row.sell_region_volume, row.last_refresh, row.notes, row.script_notes],
     ).map_err(to_string)?;
     Ok(())
 }
@@ -2105,6 +2125,7 @@ fn empty_opportunity(
         spread: None,
         source_available: None,
         estimated_profit: None,
+        cargo_used_percent: None,
         buy_region_volume: Some(buy_volume),
         sell_region_volume: Some(sell_volume),
         last_refresh: Some(refreshed),
@@ -2129,7 +2150,7 @@ fn latest_refresh_run(conn: &Connection) -> Result<RefreshRun, String> {
 }
 
 fn opportunity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Opportunity> {
-    let last_refresh: Option<String> = row.get(14)?;
+    let last_refresh: Option<String> = row.get(15)?;
     let minutes = last_refresh
         .as_ref()
         .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
@@ -2147,12 +2168,13 @@ fn opportunity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Opportunity
         spread: row.get(9)?,
         source_available: row.get(10)?,
         estimated_profit: row.get(11)?,
-        buy_region_volume: row.get(12)?,
-        sell_region_volume: row.get(13)?,
+        cargo_used_percent: row.get(12)?,
+        buy_region_volume: row.get(13)?,
+        sell_region_volume: row.get(14)?,
         last_refresh,
         last_refresh_minutes: minutes,
-        notes: row.get(15)?,
-        script_notes: row.get(16)?,
+        notes: row.get(16)?,
+        script_notes: row.get(17)?,
     })
 }
 

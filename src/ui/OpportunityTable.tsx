@@ -38,6 +38,7 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
     { accessorKey: "spread", header: "Spread", size: 95, cell: ({ getValue }) => formatPercent(getValue<number | null>()) },
     { accessorKey: "sourceAvailable", header: "Source Avail", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "estimatedProfit", header: "Est. Profit", size: 130, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "cargoUsedPercent", header: "Cargo Used", size: 115, cell: ({ getValue }) => formatPercent(getValue<number | null>()) },
     { accessorKey: "buyRegionVolume", header: "Buy 30d Vol", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "sellRegionVolume", header: "Sell 30d Vol", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "lastRefreshMinutes", header: "Last Refresh", size: 120, cell: ({ getValue }) => getValue<number | null>() === null ? "" : `${getValue<number>()} min ago` },
@@ -146,6 +147,7 @@ function cellColor(columnId: string, row: Opportunity): CSSProperties {
   }
   if (columnId === "spread") return { backgroundColor: greenScale(row.spread ?? 0, 0.2, 1.0) };
   if (columnId === "estimatedProfit") return { backgroundColor: greenScale(row.estimatedProfit ?? 0, 500000, 100000000) };
+  if (columnId === "cargoUsedPercent") return { backgroundColor: greenScale(row.cargoUsedPercent ?? 0, 0.25, 1.0) };
   if (columnId === "lastRefreshMinutes") return { backgroundColor: refreshScale(row.lastRefreshMinutes) };
   return {};
 }

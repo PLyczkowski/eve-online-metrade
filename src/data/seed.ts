@@ -23,7 +23,7 @@ export const seedSettings: Setting[] = [
   ["Auto-disable cold items", "TRUE", "After ESI validation, cold/low-traffic items are disabled to avoid future calls."],
   ["Sell reference minimum units", "5", "Use the first sell price level that reaches this cumulative unit depth."],
   ["Sell reference minimum ISK depth", "25000000", "Use this cumulative ISK depth as an alternate sell-reference threshold."],
-  ["Ship cargo capacity m3", "60000", "Maximum cargo volume used to cap estimated profit."],
+  ["Ship cargo capacity m3", "7900", "Maximum cargo volume used to cap estimated profit."],
   ["Skip refresh if target 30d volume below", "50", "Skips already-known dead destination markets"]
 ].map(([key, value, notes]) => ({ key, value, notes }));
 
@@ -151,6 +151,7 @@ export const seedOpportunities: Opportunity[] = [
     spread,
     sourceAvailable,
     estimatedProfit,
+    cargoUsedPercent: null,
     buyRegionVolume,
     sellRegionVolume,
     lastRefresh: "2026-06-17 11:47:12",

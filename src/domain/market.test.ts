@@ -122,6 +122,7 @@ describe("analyzeOpportunity", () => {
 
     expect(row.sourceAvailable).toBe(100);
     expect(row.estimatedProfit).toBe(500);
+    expect(row.cargoUsedPercent).toBe(1);
   });
 });
 

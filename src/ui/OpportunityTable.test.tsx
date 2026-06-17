@@ -16,6 +16,7 @@ const row: Opportunity = {
   spread: 0.3863,
   sourceAvailable: 93,
   estimatedProfit: 4092000,
+  cargoUsedPercent: 0.42,
   buyRegionVolume: 42069,
   sellRegionVolume: 5526,
   lastRefresh: "2026-06-17T12:00:00Z",
