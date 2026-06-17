@@ -1,4 +1,4 @@
-import type { ApiLimitStatus, DiscoveryRun, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting, TradeHub } from "../types";
+import type { ApiLimitStatus, AuthCharacter, AuthEvent, CharacterOrder, DiscoveryRun, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting, TradeHub } from "../types";
 import { seedOpportunities, seedProducts, seedRefreshRuns, seedSettings } from "../data/seed";
 import { analyzeOpportunity, defaultMarketConfig, shouldSkipLowTargetVolume } from "../domain/market";
 
@@ -10,6 +10,11 @@ type Command =
   | "list_refresh_runs"
   | "list_discovery_summary"
   | "list_api_limit_status"
+  | "list_auth_characters"
+  | "list_auth_events"
+  | "start_eve_login"
+  | "refresh_character_orders"
+  | "list_character_orders"
   | "get_refresh_status"
   | "discover_hot_products"
   | "start_refresh_next_batch"
@@ -30,6 +35,9 @@ interface StoreShape {
   opportunities: Opportunity[];
   refreshRuns: RefreshRun[];
   refreshJob: RefreshJob;
+  authCharacters: AuthCharacter[];
+  authEvents: AuthEvent[];
+  characterOrders: CharacterOrder[];
   cursor: number;
 }
 
@@ -68,6 +76,21 @@ export const api = {
   },
   listApiLimitStatus() {
     return call<ApiLimitStatus>("list_api_limit_status");
+  },
+  listAuthCharacters() {
+    return call<AuthCharacter[]>("list_auth_characters");
+  },
+  listAuthEvents() {
+    return call<AuthEvent[]>("list_auth_events");
+  },
+  startEveLogin() {
+    return call<AuthCharacter>("start_eve_login");
+  },
+  refreshCharacterOrders(characterId: number) {
+    return call<CharacterOrder[]>("refresh_character_orders", { characterId });
+  },
+  listCharacterOrders(characterId?: number) {
+    return call<CharacterOrder[]>("list_character_orders", { characterId });
   },
   getRefreshStatus() {
     return call<RefreshJob>("get_refresh_status");
@@ -116,6 +139,16 @@ async function fallbackCommand<T>(command: Command, args?: Record<string, unknow
   if (command === "list_refresh_runs") return store.refreshRuns.slice().reverse() as T;
   if (command === "list_discovery_summary") return fallbackDiscoverySummary(store) as T;
   if (command === "list_api_limit_status") return fallbackApiLimitStatus() as T;
+  if (command === "list_auth_characters") return (store.authCharacters ?? []) as T;
+  if (command === "list_auth_events") return (store.authEvents ?? []) as T;
+  if (command === "list_character_orders") {
+    const characterId = args?.characterId == null ? null : Number(args.characterId);
+    const rows = store.characterOrders ?? [];
+    return (characterId ? rows.filter((row) => row.characterId === characterId) : rows) as T;
+  }
+  if (command === "start_eve_login" || command === "refresh_character_orders") {
+    throw new Error("EVE login requires the desktop app.");
+  }
   if (command === "get_refresh_status") return store.refreshJob as T;
   if (command === "discover_hot_products") return fallbackDiscoverHotProducts(store) as T;
   if (command === "update_product_notes") return updateProductNotes(store, Number(args?.typeId), String(args?.notes ?? "")) as T;
@@ -137,6 +170,9 @@ function readStore(): StoreShape {
     const store = JSON.parse(stored) as StoreShape;
     if (!store.refreshJob) store.refreshJob = idleJob();
     if (!store.tradeHubs) store.tradeHubs = seedTradeHubs();
+    if (!store.authCharacters) store.authCharacters = [];
+    if (!store.authEvents) store.authEvents = [];
+    if (!store.characterOrders) store.characterOrders = [];
     return store;
   }
   const store: StoreShape = {
@@ -146,6 +182,9 @@ function readStore(): StoreShape {
     opportunities: seedOpportunities,
     refreshRuns: seedRefreshRuns,
     refreshJob: idleJob(),
+    authCharacters: [],
+    authEvents: [],
+    characterOrders: [],
     cursor: 0
   };
   writeStore(store);

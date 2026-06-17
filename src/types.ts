@@ -112,6 +112,37 @@ export interface ApiLimitStatus {
   lastUrl: string;
 }
 
+export interface AuthCharacter {
+  characterId: number;
+  characterName: string;
+  scopes: string;
+  expiresAt: string;
+  updatedAt: string;
+}
+
+export interface AuthEvent {
+  happenedAt: string;
+  status: string;
+  message: string;
+}
+
+export interface CharacterOrder {
+  characterId: number;
+  orderId: number;
+  typeId: number;
+  regionId: number;
+  locationId: number;
+  isBuyOrder: boolean;
+  price: number;
+  volumeRemain: number;
+  volumeTotal: number;
+  issued: string;
+  duration: number;
+  range: string;
+  state: string;
+  refreshedAt: string;
+}
+
 export interface Order {
   locationId: number;
   regionId: number;

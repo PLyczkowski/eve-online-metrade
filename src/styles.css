@@ -482,6 +482,74 @@ tbody tr:hover td {
   font-size: 14px;
 }
 
+.section-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-help {
+  margin: 0;
+  color: #697481;
+  font-size: 13px;
+}
+
+.character-list,
+.auth-event-list,
+.order-preview {
+  display: grid;
+  gap: 6px;
+}
+
+.character-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid #d8dee6;
+  border-radius: 6px;
+}
+
+.character-row div {
+  display: grid;
+  gap: 2px;
+}
+
+.character-row small,
+.order-preview span {
+  color: #697481;
+  font-size: 12px;
+}
+
+.order-preview {
+  padding: 8px;
+  border: 1px solid #d8dee6;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.auth-event-list {
+  padding: 8px;
+  border: 1px solid #d8dee6;
+  border-radius: 6px;
+  background: #fffaf0;
+}
+
+.auth-event {
+  color: #4a5568;
+  font-size: 12px;
+}
+
+.auth-event.failed {
+  color: #c53030;
+}
+
+.auth-event.success {
+  color: #2f855a;
+}
+
 .hub-list {
   display: grid;
   gap: 6px;

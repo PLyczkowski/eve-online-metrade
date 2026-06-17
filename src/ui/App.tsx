@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, DatabaseZap, Play, RefreshCw, RotateCcw, Search, Settings, Square, X } from "lucide-react";
+import { CheckCircle2, DatabaseZap, LogIn, Play, RefreshCw, RotateCcw, Search, Settings, Square, X } from "lucide-react";
 import { OpportunityTable } from "./OpportunityTable";
 import { api } from "../services/api";
-import type { ApiLimitStatus, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting, TradeHub } from "../types";
+import { formatIsk } from "../domain/format";
+import type { ApiLimitStatus, AuthCharacter, AuthEvent, CharacterOrder, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting, TradeHub } from "../types";
 
 const emptyFilters: Filters = { search: "", status: "ALL", direction: "ALL" };
 const filterStorageKey = "eve-metrade-filters-v1";
@@ -21,6 +22,9 @@ export function App() {
   const [refreshJob, setRefreshJob] = useState<RefreshJob | null>(null);
   const [discovery, setDiscovery] = useState<DiscoverySummary | null>(null);
   const [apiLimit, setApiLimit] = useState<ApiLimitStatus | null>(null);
+  const [authCharacters, setAuthCharacters] = useState<AuthCharacter[]>([]);
+  const [authEvents, setAuthEvents] = useState<AuthEvent[]>([]);
+  const [characterOrders, setCharacterOrders] = useState<CharacterOrder[]>([]);
   const [filters, setFilters] = useState<Filters>(() => readSavedFilters());
   const [intervalDraft, setIntervalDraft] = useState("600");
   const [maxItemsDraft, setMaxItemsDraft] = useState("5");
@@ -33,7 +37,7 @@ export function App() {
   const lastJobStatusRef = useRef<string | null>(null);
 
   async function load() {
-    const [opportunityRows, productRows, hubRows, settingRows, runRows, discoverySummary, apiLimitStatus, jobStatus] = await Promise.all([
+    const [opportunityRows, productRows, hubRows, settingRows, runRows, discoverySummary, apiLimitStatus, authRows, authEventRows, orderRows, jobStatus] = await Promise.all([
       api.listOpportunities(filters),
       api.listProducts(),
       api.listTradeHubs(),
@@ -41,6 +45,9 @@ export function App() {
       api.listRefreshRuns(),
       api.listDiscoverySummary(),
       api.listApiLimitStatus(),
+      api.listAuthCharacters(),
+      api.listAuthEvents(),
+      api.listCharacterOrders(),
       api.getRefreshStatus()
     ]);
     setOpportunities(opportunityRows);
@@ -50,6 +57,9 @@ export function App() {
     setRuns(runRows);
     setDiscovery(discoverySummary);
     setApiLimit(apiLimitStatus);
+    setAuthCharacters(authRows);
+    setAuthEvents(authEventRows);
+    setCharacterOrders(orderRows);
     setRefreshJob(jobStatus);
     if (!intervalEditingRef.current) {
       setIntervalDraft(settingValue(settingRows, "Automatic refresh interval seconds") || "600");
@@ -183,6 +193,14 @@ export function App() {
     await runAction("Updated trade hub", () => api.setTradeHubEnabled(id, enabled));
   }
 
+  async function startEveLogin() {
+    await runAction("EVE login", api.startEveLogin);
+  }
+
+  async function refreshOrders(characterId: number) {
+    await runAction("Refreshed character orders", () => api.refreshCharacterOrders(characterId));
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -210,6 +228,7 @@ export function App() {
         <SummaryCard label="Rows" value={opportunities.length.toString()} />
         <SummaryCard label="Enabled products" value={enabledCount.toString()} />
         <SummaryCard label="Enabled hubs" value={enabledHubCount.toString()} />
+        <SummaryCard label="Characters" value={authCharacters.length.toString()} />
         <SummaryCard label="Known items" value={discovery ? compactNumber(discovery.knownItems) : "0"} />
         <SummaryCard label="Hot candidates" value={discovery ? compactNumber(discovery.candidates) : "0"} />
         <SummaryCard label="Automatic refresh" value={automaticEnabled ? "ON" : "OFF"} icon={automaticEnabled ? <CheckCircle2 size={16} /> : <Square size={16} />} />
@@ -317,9 +336,14 @@ export function App() {
         <SettingsPanel
           settings={settings.filter((setting) => !toolbarSettingKeys.has(setting.key))}
           tradeHubs={tradeHubs}
+          authCharacters={authCharacters}
+          authEvents={authEvents}
+          characterOrders={characterOrders}
           onClose={() => setSettingsOpen(false)}
           onSave={(key, value) => runAction("Saved setting", () => api.updateSetting(key, value))}
           onToggleHub={toggleTradeHub}
+          onStartEveLogin={startEveLogin}
+          onRefreshOrders={refreshOrders}
         />
       ) : null}
     </main>
@@ -338,15 +362,25 @@ function SummaryCard({ label, value, icon }: { label: string; value: string; ico
 function SettingsPanel({
   settings,
   tradeHubs,
+  authCharacters,
+  authEvents,
+  characterOrders,
   onClose,
   onSave,
-  onToggleHub
+  onToggleHub,
+  onStartEveLogin,
+  onRefreshOrders
 }: {
   settings: Setting[];
   tradeHubs: TradeHub[];
+  authCharacters: AuthCharacter[];
+  authEvents: AuthEvent[];
+  characterOrders: CharacterOrder[];
   onClose: () => void;
   onSave: (key: string, value: string) => Promise<void>;
   onToggleHub: (id: number, enabled: boolean) => Promise<void>;
+  onStartEveLogin: () => Promise<void>;
+  onRefreshOrders: (characterId: number) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<Record<string, string>>(() => Object.fromEntries(settings.map((setting) => [setting.key, setting.value])));
   function setDraftValue(key: string, value: string) {
@@ -375,6 +409,53 @@ function SettingsPanel({
                 </label>
               ))}
             </div>
+          </section>
+          <section className="settings-section">
+            <div className="section-heading-row">
+              <h3>EVE login</h3>
+              <button className="icon-button text-button" onClick={onStartEveLogin}>
+                <LogIn size={16} /> Log in with EVE
+              </button>
+            </div>
+            {authCharacters.length === 0 ? (
+              <p className="settings-help">Set the EVE SSO client ID below, then log in.</p>
+            ) : (
+              <div className="character-list">
+                {authCharacters.map((character) => {
+                  const orders = characterOrders.filter((order) => order.characterId === character.characterId);
+                  const latest = orders[0]?.refreshedAt ?? "Not fetched";
+                  return (
+                    <div key={character.characterId} className="character-row">
+                      <div>
+                        <strong>{character.characterName}</strong>
+                        <small>{orders.length} active orders, refreshed {latest}</small>
+                      </div>
+                      <button className="icon-button text-button" onClick={() => onRefreshOrders(character.characterId)}>
+                        <RefreshCw size={16} /> Refresh orders
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {authEvents.length > 0 ? (
+              <div className="auth-event-list">
+                {authEvents.slice(0, 5).map((event) => (
+                  <span key={`${event.happenedAt}-${event.message}`} className={`auth-event ${event.status}`}>
+                    {event.happenedAt}: {event.message}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {characterOrders.length > 0 ? (
+              <div className="order-preview">
+                {characterOrders.slice(0, 8).map((order) => (
+                  <span key={`${order.characterId}-${order.orderId}`}>
+                    {order.isBuyOrder ? "Buy" : "Sell"} type {order.typeId}: {order.volumeRemain}/{order.volumeTotal} @ {formatIsk(order.price)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </section>
           {settings.map((setting) => {
             const value = draft[setting.key] ?? "";

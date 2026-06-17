@@ -1,8 +1,13 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{Duration, Utc};
 use flate2::read::GzDecoder;
+use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::thread;
@@ -137,6 +142,76 @@ struct ApiLimitStatus {
     last_url: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AuthCharacter {
+    character_id: i64,
+    character_name: String,
+    scopes: String,
+    expires_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AuthEvent {
+    happened_at: String,
+    status: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CharacterOrder {
+    character_id: i64,
+    order_id: i64,
+    type_id: i64,
+    region_id: i64,
+    location_id: i64,
+    is_buy_order: bool,
+    price: f64,
+    volume_remain: i64,
+    volume_total: i64,
+    issued: String,
+    duration: i64,
+    range: String,
+    state: String,
+    refreshed_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    expires_in: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct JwtClaims {
+    sub: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    scp: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EsiCharacterOrder {
+    order_id: i64,
+    type_id: i64,
+    region_id: i64,
+    location_id: i64,
+    #[serde(default)]
+    is_buy_order: bool,
+    price: f64,
+    volume_remain: i64,
+    volume_total: i64,
+    issued: String,
+    duration: i64,
+    range: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct EsiOrder {
     location_id: i64,
@@ -207,6 +282,11 @@ pub fn run() {
             list_refresh_runs,
             list_discovery_summary,
             list_api_limit_status,
+            list_auth_characters,
+            list_auth_events,
+            start_eve_login,
+            refresh_character_orders,
+            list_character_orders,
             get_refresh_status,
             discover_hot_products,
             start_refresh_next_batch,
@@ -290,6 +370,62 @@ fn list_discovery_summary(state: State<AppState>) -> Result<DiscoverySummary, St
 fn list_api_limit_status(state: State<AppState>) -> Result<ApiLimitStatus, String> {
     let conn = open(&state)?;
     api_limit_status(&conn)
+}
+
+#[tauri::command]
+fn list_auth_characters(state: State<AppState>) -> Result<Vec<AuthCharacter>, String> {
+    let conn = open(&state)?;
+    let mut stmt = conn
+        .prepare("select character_id, character_name, scopes, expires_at, updated_at from auth_characters order by character_name")
+        .map_err(to_string)?;
+    let result = rows(
+        stmt.query_map([], auth_character_from_row)
+            .map_err(to_string)?,
+    )?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn list_auth_events(state: State<AppState>) -> Result<Vec<AuthEvent>, String> {
+    let conn = open(&state)?;
+    let mut stmt = conn
+        .prepare("select happened_at, status, message from auth_events order by rowid desc limit 20")
+        .map_err(to_string)?;
+    let result = rows(
+        stmt.query_map([], |row| {
+            Ok(AuthEvent {
+                happened_at: row.get(0)?,
+                status: row.get(1)?,
+                message: row.get(2)?,
+            })
+        })
+        .map_err(to_string)?,
+    )?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn start_eve_login(state: State<AppState>) -> Result<AuthCharacter, String> {
+    let conn = open(&state)?;
+    start_eve_login_inner(&conn)
+}
+
+#[tauri::command]
+fn refresh_character_orders(
+    state: State<AppState>,
+    character_id: i64,
+) -> Result<Vec<CharacterOrder>, String> {
+    let conn = open(&state)?;
+    refresh_character_orders_inner(&conn, character_id)
+}
+
+#[tauri::command]
+fn list_character_orders(
+    state: State<AppState>,
+    character_id: Option<i64>,
+) -> Result<Vec<CharacterOrder>, String> {
+    let conn = open(&state)?;
+    list_character_orders_inner(&conn, character_id)
 }
 
 #[tauri::command]
@@ -1333,6 +1469,37 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         create table if not exists discovery_runs(run_time text not null, item_types_imported integer not null, market_rows_imported integer not null, candidates_found integer not null, products_enabled integer not null, errors text not null, duration_seconds integer not null);
         create table if not exists app_state(key text primary key, value text not null);
         create table if not exists api_limit_state(key text primary key, value text not null);
+        create table if not exists auth_characters(
+          character_id integer primary key,
+          character_name text not null,
+          scopes text not null,
+          access_token text not null,
+          refresh_token text not null,
+          expires_at text not null,
+          updated_at text not null
+        );
+        create table if not exists auth_events(
+          happened_at text not null,
+          status text not null,
+          message text not null
+        );
+        create table if not exists character_orders(
+          character_id integer not null,
+          order_id integer not null,
+          type_id integer not null,
+          region_id integer not null,
+          location_id integer not null,
+          is_buy_order integer not null,
+          price real not null,
+          volume_remain integer not null,
+          volume_total integer not null,
+          issued text not null,
+          duration integer not null,
+          range text not null,
+          state text not null,
+          refreshed_at text not null,
+          primary key(character_id, order_id)
+        );
         "
     )?;
     let _ = conn.execute(
@@ -1423,6 +1590,21 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "Max enabled hubs for ESI refresh",
             "3",
             "Caps enabled trade hubs used per item to limit API calls.",
+        ),
+        (
+            "EVE SSO client ID",
+            "",
+            "Client ID from developers.eveonline.com for native EVE login.",
+        ),
+        (
+            "EVE SSO callback URL",
+            "http://localhost:17890/callback",
+            "Must match the callback URL in the EVE developer app.",
+        ),
+        (
+            "EVE SSO scopes",
+            "esi-markets.read_character_orders.v1",
+            "Scopes requested when logging in with EVE.",
         ),
     ];
     for row in discovery_settings {
@@ -1757,6 +1939,473 @@ fn api_limit_status(conn: &Connection) -> Result<ApiLimitStatus, String> {
         rate_limited: api_state(conn, "rate_limited", "FALSE") == "TRUE",
         last_url: api_state(conn, "last_url", ""),
     })
+}
+
+fn auth_character_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthCharacter> {
+    Ok(AuthCharacter {
+        character_id: row.get(0)?,
+        character_name: row.get(1)?,
+        scopes: row.get(2)?,
+        expires_at: row.get(3)?,
+        updated_at: row.get(4)?,
+    })
+}
+
+fn character_order_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CharacterOrder> {
+    Ok(CharacterOrder {
+        character_id: row.get(0)?,
+        order_id: row.get(1)?,
+        type_id: row.get(2)?,
+        region_id: row.get(3)?,
+        location_id: row.get(4)?,
+        is_buy_order: row.get::<_, i64>(5)? != 0,
+        price: row.get(6)?,
+        volume_remain: row.get(7)?,
+        volume_total: row.get(8)?,
+        issued: row.get(9)?,
+        duration: row.get(10)?,
+        range: row.get(11)?,
+        state: row.get(12)?,
+        refreshed_at: row.get(13)?,
+    })
+}
+
+fn log_auth_event(
+    conn: &Connection,
+    status: impl AsRef<str>,
+    message: impl AsRef<str>,
+) -> Result<(), String> {
+    conn.execute(
+        "insert into auth_events(happened_at, status, message) values (?1, ?2, ?3)",
+        params![Utc::now().to_rfc3339(), status.as_ref(), message.as_ref()],
+    )
+    .map_err(to_string)?;
+    Ok(())
+}
+
+fn start_eve_login_inner(conn: &Connection) -> Result<AuthCharacter, String> {
+    let client_id = setting(conn, "EVE SSO client ID", "").trim().to_string();
+    if client_id.is_empty() {
+        let _ = log_auth_event(conn, "failed", "Set EVE SSO client ID in Settings first.");
+        return Err("Set EVE SSO client ID in Settings first.".to_string());
+    }
+    let callback_url = setting(
+        conn,
+        "EVE SSO callback URL",
+        "http://localhost:17890/callback",
+    );
+    let scopes = setting(
+        conn,
+        "EVE SSO scopes",
+        "esi-markets.read_character_orders.v1",
+    );
+    let (callback_port, callback_path) = callback_parts(&callback_url)?;
+    let listener = TcpListener::bind(("127.0.0.1", callback_port))
+        .map_err(|error| format!("Could not listen for EVE login callback: {}", error))?;
+    listener.set_nonblocking(true).map_err(to_string)?;
+
+    let verifier = random_url_token(32);
+    let state = random_url_token(24);
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let auth_url = format!(
+        "https://login.eveonline.com/v2/oauth/authorize/?response_type=code&redirect_uri={}&client_id={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        urlencoding::encode(&callback_url),
+        urlencoding::encode(&client_id),
+        urlencoding::encode(&scopes),
+        urlencoding::encode(&challenge),
+        urlencoding::encode(&state)
+    );
+
+    webbrowser::open(&auth_url)
+        .map_err(|error| format!("Could not open EVE login page: {}", error))?;
+    let _ = log_auth_event(conn, "started", "Opened EVE login in the browser.");
+    let callback = wait_for_login_callback(&listener, &callback_path, StdDuration::from_secs(180))?;
+    if callback
+        .get("state")
+        .map(|value| value.as_str())
+        .unwrap_or("")
+        != state
+    {
+        let _ = log_auth_event(conn, "failed", "EVE login state did not match.");
+        return Err("EVE login state did not match. Please try again.".to_string());
+    }
+    if let Some(error) = callback.get("error") {
+        let description = callback
+            .get("error_description")
+            .map(|value| format!(": {}", value))
+            .unwrap_or_default();
+        let _ = log_auth_event(conn, "failed", format!("EVE login failed: {}{}", error, description));
+        return Err(format!("EVE login failed: {}", error));
+    }
+    let code = callback
+        .get("code")
+        .ok_or_else(|| "EVE login did not return a code.".to_string())?;
+    let token = match exchange_auth_code(&client_id, code, &verifier) {
+        Ok(token) => token,
+        Err(error) => {
+            let _ = log_auth_event(conn, "failed", format!("Token exchange failed: {}", error));
+            return Err(error);
+        }
+    };
+    match store_auth_character(conn, token, &scopes) {
+        Ok(character) => {
+            let _ = log_auth_event(
+                conn,
+                "success",
+                format!("Logged in as {}.", character.character_name),
+            );
+            Ok(character)
+        }
+        Err(error) => {
+            let _ = log_auth_event(conn, "failed", format!("Could not store login: {}", error));
+            Err(error)
+        }
+    }
+}
+
+fn callback_parts(callback_url: &str) -> Result<(u16, String), String> {
+    let url = callback_url
+        .strip_prefix("http://localhost:")
+        .or_else(|| callback_url.strip_prefix("http://127.0.0.1:"))
+        .ok_or_else(|| {
+            "Callback URL must start with http://localhost: or http://127.0.0.1:".to_string()
+        })?;
+    let mut pieces = url.splitn(2, '/');
+    let port = pieces
+        .next()
+        .ok_or_else(|| "Callback URL is missing a port.".to_string())?
+        .parse::<u16>()
+        .map_err(|_| "Callback URL port must be a number.".to_string())?;
+    let path = format!("/{}", pieces.next().unwrap_or("callback"));
+    Ok((port, path))
+}
+
+fn random_url_token(bytes: usize) -> String {
+    let mut buffer = vec![0_u8; bytes];
+    rand::thread_rng().fill_bytes(&mut buffer);
+    URL_SAFE_NO_PAD.encode(buffer)
+}
+
+fn wait_for_login_callback(
+    listener: &TcpListener,
+    callback_path: &str,
+    timeout: StdDuration,
+) -> Result<HashMap<String, String>, String> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut buffer = [0_u8; 4096];
+                let read = stream.read(&mut buffer).map_err(to_string)?;
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let first_line = request.lines().next().unwrap_or("");
+                let target = first_line
+                    .split_whitespace()
+                    .nth(1)
+                    .ok_or_else(|| "Invalid EVE login callback.".to_string())?;
+                let (path, query) = target.split_once('?').unwrap_or((target, ""));
+                let parsed = parse_query(query);
+                let body = if path != callback_path {
+                    "EVE Metrade received an unexpected callback path.".to_string()
+                } else if let Some(error) = parsed.get("error") {
+                    let description = parsed
+                        .get("error_description")
+                        .map(|value| format!(" {}", value))
+                        .unwrap_or_default();
+                    format!("EVE Metrade login failed: {}{}", error, description)
+                } else {
+                    "EVE Metrade received the login callback. You can close this tab and return to the app.".to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                if path != callback_path {
+                    return Err(format!("Unexpected login callback path: {}", path));
+                }
+                return Ok(parsed);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(StdDuration::from_millis(200));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("Timed out waiting for EVE login.".to_string())
+}
+
+fn parse_query(query: &str) -> HashMap<String, String> {
+    query
+        .split('&')
+        .filter_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            Some((
+                urlencoding::decode(key).ok()?.to_string(),
+                urlencoding::decode(value).ok()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn exchange_auth_code(
+    client_id: &str,
+    code: &str,
+    verifier: &str,
+) -> Result<TokenResponse, String> {
+    let mut form = HashMap::new();
+    form.insert("grant_type", "authorization_code".to_string());
+    form.insert("code", code.to_string());
+    form.insert("client_id", client_id.to_string());
+    form.insert("code_verifier", verifier.to_string());
+    reqwest::blocking::Client::builder()
+        .timeout(StdDuration::from_secs(30))
+        .build()
+        .map_err(to_string)?
+        .post("https://login.eveonline.com/v2/oauth/token")
+        .form(&form)
+        .send()
+        .map_err(to_string)
+        .and_then(|response| token_response(response, "EVE login token exchange"))
+}
+
+fn refresh_access_token(
+    conn: &Connection,
+    character_id: i64,
+    client_id: &str,
+    refresh_token: &str,
+) -> Result<String, String> {
+    let mut form = HashMap::new();
+    form.insert("grant_type", "refresh_token".to_string());
+    form.insert("refresh_token", refresh_token.to_string());
+    form.insert("client_id", client_id.to_string());
+    let token = reqwest::blocking::Client::builder()
+        .timeout(StdDuration::from_secs(30))
+        .build()
+        .map_err(to_string)?
+        .post("https://login.eveonline.com/v2/oauth/token")
+        .form(&form)
+        .send()
+        .map_err(to_string)
+        .and_then(|response| token_response(response, "EVE token refresh"))?;
+    let expires_at = (Utc::now() + Duration::seconds(token.expires_in)).to_rfc3339();
+    conn.execute(
+        "update auth_characters
+         set access_token = ?1, refresh_token = coalesce(?2, refresh_token), expires_at = ?3, updated_at = ?4
+         where character_id = ?5",
+        params![
+            token.access_token,
+            token.refresh_token,
+            expires_at,
+            Utc::now().to_rfc3339(),
+            character_id
+        ],
+    )
+    .map_err(to_string)?;
+    Ok(conn
+        .query_row(
+            "select access_token from auth_characters where character_id = ?1",
+            params![character_id],
+            |row| row.get(0),
+        )
+        .map_err(to_string)?)
+}
+
+fn token_response(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<TokenResponse, String> {
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        return Err(format!(
+            "{} failed: HTTP {} {}",
+            label,
+            status.as_u16(),
+            body
+        ));
+    }
+    response.json::<TokenResponse>().map_err(to_string)
+}
+
+fn store_auth_character(
+    conn: &Connection,
+    token: TokenResponse,
+    requested_scopes: &str,
+) -> Result<AuthCharacter, String> {
+    let claims = parse_jwt_claims(&token.access_token)?;
+    let character_id = claims
+        .sub
+        .rsplit(':')
+        .next()
+        .ok_or_else(|| "EVE token did not include a character ID.".to_string())?
+        .parse::<i64>()
+        .map_err(|_| "EVE token character ID was not numeric.".to_string())?;
+    let character_name = claims
+        .name
+        .unwrap_or_else(|| format!("Character {}", character_id));
+    let scopes = claims
+        .scp
+        .map(|values| values.join(" "))
+        .unwrap_or_else(|| requested_scopes.to_string());
+    let refresh_token = token.refresh_token.ok_or_else(|| {
+        "EVE did not return a refresh token. Check the app is configured as a native app."
+            .to_string()
+    })?;
+    let expires_at = (Utc::now() + Duration::seconds(token.expires_in)).to_rfc3339();
+    let updated_at = Utc::now().to_rfc3339();
+    conn.execute(
+        "insert into auth_characters(character_id, character_name, scopes, access_token, refresh_token, expires_at, updated_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         on conflict(character_id) do update set
+           character_name = excluded.character_name,
+           scopes = excluded.scopes,
+           access_token = excluded.access_token,
+           refresh_token = excluded.refresh_token,
+           expires_at = excluded.expires_at,
+           updated_at = excluded.updated_at",
+        params![
+            character_id,
+            character_name,
+            scopes,
+            token.access_token,
+            refresh_token,
+            expires_at,
+            updated_at
+        ],
+    )
+    .map_err(to_string)?;
+    conn.query_row(
+        "select character_id, character_name, scopes, expires_at, updated_at from auth_characters where character_id = ?1",
+        params![character_id],
+        auth_character_from_row,
+    )
+    .map_err(to_string)
+}
+
+fn parse_jwt_claims(access_token: &str) -> Result<JwtClaims, String> {
+    let payload = access_token
+        .split('.')
+        .nth(1)
+        .ok_or_else(|| "EVE access token was not a JWT.".to_string())?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|error| format!("Could not decode EVE token: {}", error))?;
+    serde_json::from_slice::<JwtClaims>(&decoded).map_err(to_string)
+}
+
+fn valid_character_access_token(conn: &Connection, character_id: i64) -> Result<String, String> {
+    let (access_token, refresh_token, expires_at): (String, String, String) = conn
+        .query_row(
+            "select access_token, refresh_token, expires_at from auth_characters where character_id = ?1",
+            params![character_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(to_string)?
+        .ok_or_else(|| "Character is not logged in.".to_string())?;
+    let expires = chrono::DateTime::parse_from_rfc3339(&expires_at)
+        .map_err(|_| "Stored EVE token expiry is invalid.".to_string())?
+        .with_timezone(&Utc);
+    if expires > Utc::now() + Duration::seconds(60) {
+        return Ok(access_token);
+    }
+    let client_id = setting(conn, "EVE SSO client ID", "").trim().to_string();
+    if client_id.is_empty() {
+        return Err("Set EVE SSO client ID in Settings first.".to_string());
+    }
+    refresh_access_token(conn, character_id, &client_id, &refresh_token)
+}
+
+fn refresh_character_orders_inner(
+    conn: &Connection,
+    character_id: i64,
+) -> Result<Vec<CharacterOrder>, String> {
+    let access_token = valid_character_access_token(conn, character_id)?;
+    let base_url = setting(conn, "ESI base URL", "https://esi.evetech.net/latest");
+    let url = format!(
+        "{}/characters/{}/orders/?datasource=tranquility",
+        base_url.trim_end_matches('/'),
+        character_id
+    );
+    let response = reqwest::blocking::Client::builder()
+        .timeout(StdDuration::from_secs(30))
+        .build()
+        .map_err(to_string)?
+        .get(&url)
+        .header(
+            "User-Agent",
+            setting(conn, "User agent", "EVE Metrade local app"),
+        )
+        .bearer_auth(access_token)
+        .send()
+        .map_err(to_string)?;
+    let status = response.status();
+    let _ = record_api_limit_state(conn, &url, status.as_u16() as i64, response.headers());
+    if status.as_u16() == 420 || status.as_u16() == 429 {
+        wait_from_headers(response.headers(), 60);
+        return Err(format!("ESI rate limit {} for {}", status.as_u16(), url));
+    }
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        return Err(format!("ESI {} for {} {}", status.as_u16(), url, body));
+    }
+    let orders = response
+        .json::<Vec<EsiCharacterOrder>>()
+        .map_err(to_string)?;
+    let refreshed_at = Utc::now().to_rfc3339();
+    conn.execute(
+        "delete from character_orders where character_id = ?1",
+        params![character_id],
+    )
+    .map_err(to_string)?;
+    for order in orders {
+        conn.execute(
+            "insert into character_orders(character_id, order_id, type_id, region_id, location_id, is_buy_order, price, volume_remain, volume_total, issued, duration, range, state, refreshed_at)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'open', ?13)",
+            params![
+                character_id,
+                order.order_id,
+                order.type_id,
+                order.region_id,
+                order.location_id,
+                if order.is_buy_order { 1 } else { 0 },
+                order.price,
+                order.volume_remain,
+                order.volume_total,
+                order.issued,
+                order.duration,
+                order.range,
+                refreshed_at
+            ],
+        )
+        .map_err(to_string)?;
+    }
+    list_character_orders_inner(conn, Some(character_id))
+}
+
+fn list_character_orders_inner(
+    conn: &Connection,
+    character_id: Option<i64>,
+) -> Result<Vec<CharacterOrder>, String> {
+    if let Some(id) = character_id {
+        let mut stmt = conn
+            .prepare("select character_id, order_id, type_id, region_id, location_id, is_buy_order, price, volume_remain, volume_total, issued, duration, range, state, refreshed_at from character_orders where character_id = ?1 order by refreshed_at desc, order_id")
+            .map_err(to_string)?;
+        return rows(
+            stmt.query_map(params![id], character_order_from_row)
+                .map_err(to_string)?,
+        );
+    }
+    let mut stmt = conn
+        .prepare("select character_id, order_id, type_id, region_id, location_id, is_buy_order, price, volume_remain, volume_total, issued, duration, range, state, refreshed_at from character_orders order by refreshed_at desc, character_id, order_id")
+        .map_err(to_string)?;
+    let result = rows(
+        stmt.query_map([], character_order_from_row)
+            .map_err(to_string)?,
+    )?;
+    Ok(result)
 }
 
 fn record_api_limit_state(
