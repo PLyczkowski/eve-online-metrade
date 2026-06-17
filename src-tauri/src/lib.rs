@@ -264,6 +264,7 @@ fn list_api_limit_status(state: State<AppState>) -> Result<ApiLimitStatus, Strin
 #[tauri::command]
 fn get_refresh_status(state: State<AppState>) -> Result<RefreshJob, String> {
     let conn = open(&state)?;
+    recover_stale_refresh_job(&conn)?;
     get_refresh_job(&conn)
 }
 
@@ -434,6 +435,7 @@ fn start_refresh_job(
 ) -> Result<RefreshJob, String> {
     let db_path = db_path(&state)?;
     let conn = open_path(db_path.clone())?;
+    recover_stale_refresh_job(&conn)?;
     let current = get_refresh_job(&conn)?;
     if current.status == "running" {
         if kind == "product" {
@@ -1379,6 +1381,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "7900",
             "Maximum cargo volume used to cap estimated profit.",
         ),
+        (
+            "Refresh stale timeout seconds",
+            "600",
+            "Marks a refresh failed if it does not complete within this time.",
+        ),
     ];
     for row in discovery_settings {
         conn.execute("insert into settings(key, value, notes) values (?1, ?2, ?3) on conflict(key) do nothing", params![row.0, row.1, row.2])?;
@@ -1515,6 +1522,11 @@ fn seed(conn: &Connection) -> rusqlite::Result<()> {
             "Ship cargo capacity m3",
             "7900",
             "Maximum cargo volume used to cap estimated profit.",
+        ),
+        (
+            "Refresh stale timeout seconds",
+            "600",
+            "Marks a refresh failed if it does not complete within this time.",
         ),
         (
             "Skip refresh if target 30d volume below",
@@ -1883,6 +1895,37 @@ fn update_refresh_job_progress(
     set_refresh_job(conn, &job)
 }
 
+fn recover_stale_refresh_job(conn: &Connection) -> Result<(), String> {
+    let mut job = get_refresh_job(conn)?;
+    if job.status != "running" || job.started_at.trim().is_empty() {
+        return Ok(());
+    }
+    let timeout_seconds = setting(conn, "Refresh stale timeout seconds", "600")
+        .parse::<i64>()
+        .unwrap_or(600)
+        .max(60);
+    let started = chrono::DateTime::parse_from_rfc3339(&job.started_at)
+        .map_err(to_string)?
+        .with_timezone(&Utc);
+    let age_seconds = (Utc::now() - started).num_seconds();
+    if age_seconds <= timeout_seconds {
+        return Ok(());
+    }
+    let last_item = if job.current_item.is_empty() {
+        "unknown".to_string()
+    } else {
+        job.current_item.clone()
+    };
+    job.status = "failed".to_string();
+    job.current_item = String::new();
+    job.last_error = format!(
+        "Refresh marked failed after {} seconds without completion. Last item: {}.",
+        age_seconds, last_item
+    );
+    job.finished_at = Utc::now().to_rfc3339();
+    set_refresh_job(conn, &job)
+}
+
 fn enqueue_refresh_product(conn: &Connection, type_id: i64) -> Result<(), String> {
     let existing: i64 = conn
         .query_row(
@@ -2012,7 +2055,10 @@ fn fetch_json<T: serde::de::DeserializeOwned>(
     error_limit_threshold: u64,
 ) -> Result<T, String> {
     *api_calls += 1;
-    let response = reqwest::blocking::Client::new()
+    let response = reqwest::blocking::Client::builder()
+        .timeout(StdDuration::from_secs(30))
+        .build()
+        .map_err(to_string)?
         .get(url)
         .header("User-Agent", "EVE Metrade local app")
         .send()
