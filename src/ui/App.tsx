@@ -5,6 +5,12 @@ import { api } from "../services/api";
 import type { ApiLimitStatus, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting } from "../types";
 
 const emptyFilters: Filters = { search: "", status: "ALL", direction: "ALL" };
+const filterStorageKey = "eve-metrade-filters-v1";
+const toolbarSettingKeys = new Set([
+  "Automatic refresh enabled",
+  "Automatic refresh interval seconds",
+  "Max items per refresh"
+]);
 
 export function App() {
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
@@ -14,13 +20,15 @@ export function App() {
   const [refreshJob, setRefreshJob] = useState<RefreshJob | null>(null);
   const [discovery, setDiscovery] = useState<DiscoverySummary | null>(null);
   const [apiLimit, setApiLimit] = useState<ApiLimitStatus | null>(null);
-  const [filters, setFilters] = useState<Filters>(emptyFilters);
+  const [filters, setFilters] = useState<Filters>(() => readSavedFilters());
   const [intervalDraft, setIntervalDraft] = useState("600");
+  const [maxItemsDraft, setMaxItemsDraft] = useState("5");
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [message, setMessage] = useState("Ready");
   const busyRef = useRef(false);
   const intervalEditingRef = useRef(false);
+  const maxItemsEditingRef = useRef(false);
   const lastJobStatusRef = useRef<string | null>(null);
 
   async function load() {
@@ -43,11 +51,18 @@ export function App() {
     if (!intervalEditingRef.current) {
       setIntervalDraft(settingValue(settingRows, "Automatic refresh interval seconds") || "600");
     }
+    if (!maxItemsEditingRef.current) {
+      setMaxItemsDraft(settingValue(settingRows, "Max items per refresh") || "5");
+    }
   }
 
   useEffect(() => {
     load().catch((error) => setMessage((error as Error).message));
   }, [filters.status, filters.direction, filters.search]);
+
+  useEffect(() => {
+    localStorage.setItem(filterStorageKey, JSON.stringify(filters));
+  }, [filters]);
 
   const statusOptions = useMemo(() => {
     const values = new Set(opportunities.map((row) => row.status));
@@ -150,6 +165,12 @@ export function App() {
     await runAction("Updated refresh interval", () => api.updateSetting("Automatic refresh interval seconds", seconds.toString()));
   }
 
+  async function saveMaxItemsPerRefresh() {
+    const count = Math.max(1, Math.round(Number(maxItemsDraft) || 5));
+    setMaxItemsDraft(count.toString());
+    await runAction("Updated items per refresh", () => api.updateSetting("Max items per refresh", count.toString()));
+  }
+
   async function discoverHotProducts() {
     await runAction("Discovered hot products", api.discoverHotProducts);
   }
@@ -186,7 +207,6 @@ export function App() {
         <SummaryCard label="Refresh interval" value={`${automaticIntervalSeconds}s`} />
         <SummaryCard label="Refresh job" value={refreshRunning ? `${refreshJob.scannedCount}/${refreshJob.totalCount || "?"}` : refreshJob?.status ?? "idle"} />
         <SummaryCard label="Last run" value={latestRun ? latestRun.refreshTime : "None"} />
-        <SummaryCard label="API calls" value={latestRun ? latestRun.apiCalls.toString() : "0"} />
       </section>
 
       <section className="api-burn-band" aria-label="API burn rate">
@@ -246,6 +266,28 @@ export function App() {
           />
           <span>sec</span>
         </label>
+        <label className="interval-control">
+          <span>Items</span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={maxItemsDraft}
+            onChange={(event) => setMaxItemsDraft(event.target.value)}
+            onFocus={() => {
+              maxItemsEditingRef.current = true;
+            }}
+            onBlur={() => {
+              maxItemsEditingRef.current = false;
+              saveMaxItemsPerRefresh();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+            disabled={busy}
+          />
+          <span>/ refresh</span>
+        </label>
         <button className="icon-button" onClick={load} title="Reload table" disabled={busy}>
           <RefreshCw size={17} />
         </button>
@@ -265,7 +307,7 @@ export function App() {
 
       {settingsOpen ? (
         <SettingsPanel
-          settings={settings}
+          settings={settings.filter((setting) => !toolbarSettingKeys.has(setting.key))}
           onClose={() => setSettingsOpen(false)}
           onSave={(key, value) => runAction("Saved setting", () => api.updateSetting(key, value))}
         />
@@ -285,6 +327,9 @@ function SummaryCard({ label, value, icon }: { label: string; value: string; ico
 
 function SettingsPanel({ settings, onClose, onSave }: { settings: Setting[]; onClose: () => void; onSave: (key: string, value: string) => Promise<void> }) {
   const [draft, setDraft] = useState<Record<string, string>>(() => Object.fromEntries(settings.map((setting) => [setting.key, setting.value])));
+  function setDraftValue(key: string, value: string) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <section className="settings-panel">
@@ -293,21 +338,74 @@ function SettingsPanel({ settings, onClose, onSave }: { settings: Setting[]; onC
           <button className="icon-button" onClick={onClose} title="Close"><X size={18} /></button>
         </header>
         <div className="settings-list">
-          {settings.map((setting) => (
-            <label key={setting.key}>
-              <span>{setting.key}</span>
-              <input
-                value={draft[setting.key] ?? ""}
-                onChange={(event) => setDraft((current) => ({ ...current, [setting.key]: event.target.value }))}
-                onBlur={() => onSave(setting.key, draft[setting.key] ?? "")}
-              />
-              <small>{setting.notes}</small>
-            </label>
-          ))}
+          {settings.map((setting) => {
+            const value = draft[setting.key] ?? "";
+            const kind = settingInputKind(setting);
+            return (
+              <label key={setting.key}>
+                <span>{setting.key}</span>
+                {kind === "boolean" ? (
+                  <input
+                    type="checkbox"
+                    checked={value !== "FALSE"}
+                    onChange={(event) => {
+                      const next = event.target.checked ? "TRUE" : "FALSE";
+                      setDraftValue(setting.key, next);
+                      onSave(setting.key, next);
+                    }}
+                  />
+                ) : kind === "number" ? (
+                  <input
+                    type="number"
+                    step={numberStep(setting.key, value)}
+                    value={value}
+                    onChange={(event) => setDraftValue(setting.key, event.target.value)}
+                    onBlur={() => onSave(setting.key, draft[setting.key] ?? "")}
+                  />
+                ) : (
+                  <input
+                    type={kind === "url" ? "url" : "text"}
+                    value={value}
+                    onChange={(event) => setDraftValue(setting.key, event.target.value)}
+                    onBlur={() => onSave(setting.key, draft[setting.key] ?? "")}
+                  />
+                )}
+                <small>{setting.notes}</small>
+              </label>
+            );
+          })}
         </div>
       </section>
     </div>
   );
+}
+
+function readSavedFilters(): Filters {
+  try {
+    const saved = localStorage.getItem(filterStorageKey);
+    if (!saved) return emptyFilters;
+    const parsed = JSON.parse(saved) as Partial<Filters>;
+    return {
+      search: parsed.search ?? "",
+      status: parsed.status ?? "ALL",
+      direction: parsed.direction ?? "ALL"
+    };
+  } catch {
+    return emptyFilters;
+  }
+}
+
+function settingInputKind(setting: Setting): "boolean" | "number" | "url" | "text" {
+  const value = setting.value.trim();
+  if (value === "TRUE" || value === "FALSE") return "boolean";
+  if (/^-?\d+(\.\d+)?$/.test(value)) return "number";
+  if (/^https?:\/\//i.test(value)) return "url";
+  return "text";
+}
+
+function numberStep(key: string, value: string): string {
+  if (key.toLowerCase().includes("spread") || value.includes(".")) return "0.01";
+  return "1";
 }
 
 function settingValue(settings: Setting[], key: string): string {

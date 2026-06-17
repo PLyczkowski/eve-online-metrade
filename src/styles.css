@@ -208,7 +208,7 @@ select {
 }
 
 select,
-.settings-list input {
+.settings-list input:not([type="checkbox"]) {
   height: 34px;
   border: 1px solid #c7ced6;
   border-radius: 6px;
@@ -467,6 +467,12 @@ tbody tr:hover td {
   grid-template-columns: minmax(190px, 260px) minmax(130px, 1fr);
   gap: 4px 10px;
   align-items: center;
+}
+
+.settings-list input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #2f855a;
 }
 
 .settings-list small {
