@@ -27,3 +27,4 @@ if errorlevel 1 (
 )
 
 start "" "%APP%"
+exit /b 0
