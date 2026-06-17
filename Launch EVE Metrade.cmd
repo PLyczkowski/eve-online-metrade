@@ -13,7 +13,7 @@ if errorlevel 1 (
   echo Rust/Cargo was not found.
   echo Install Rust, then run this launcher again:
   echo   https://rustup.rs/
-  pause
+  if not "%EVE_METRADE_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
@@ -22,7 +22,7 @@ call npm run tauri build
 if errorlevel 1 (
   echo.
   echo Build failed. The app was not launched.
-  pause
+  if not "%EVE_METRADE_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
