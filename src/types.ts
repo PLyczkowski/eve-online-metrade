@@ -44,6 +44,7 @@ export interface Opportunity {
   sellHub: string;
   buyPrice: number | null;
   sellReference: number | null;
+  destinationLowestSell: number | null;
   profitPerUnit: number | null;
   spread: number | null;
   sourceAvailable: number | null;

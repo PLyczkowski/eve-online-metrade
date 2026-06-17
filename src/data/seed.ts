@@ -148,6 +148,7 @@ export const seedOpportunities: Opportunity[] = [
     sellHub,
     buyPrice,
     sellReference,
+    destinationLowestSell: sellReference,
     profitPerUnit,
     spread,
     sourceAvailable,

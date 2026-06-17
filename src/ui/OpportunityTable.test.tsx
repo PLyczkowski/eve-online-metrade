@@ -12,6 +12,7 @@ const row: Opportunity = {
   sellHub: "Amarr",
   buyPrice: 113900,
   sellReference: 157900,
+  destinationLowestSell: 157900,
   profitPerUnit: 44000,
   spread: 0.3863,
   sourceAvailable: 93,

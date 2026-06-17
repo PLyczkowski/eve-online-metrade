@@ -148,11 +148,22 @@ function cellColor(columnId: string, row: Opportunity): CSSProperties {
   if (columnId === "spread") return { backgroundColor: greenScale(row.spread ?? 0, 0.2, 1.0) };
   if (columnId === "estimatedProfit") return { backgroundColor: greenScale(row.estimatedProfit ?? 0, 500000, 100000000) };
   if (columnId === "cargoUsedPercent") return { backgroundColor: greenScale(row.cargoUsedPercent ?? 0, 0.25, 1.0) };
-  if (columnId === "myDestinationSellQuantity" || columnId === "myDestinationSellPrice") {
+  if (columnId === "myDestinationSellQuantity") {
     return row.myDestinationSellQuantity ? { backgroundColor: "#dbeafe" } : {};
+  }
+  if (columnId === "myDestinationSellPrice") {
+    return myDestinationPriceColor(row);
   }
   if (columnId === "lastRefreshMinutes") return { backgroundColor: refreshScale(row.lastRefreshMinutes) };
   return {};
+}
+
+function myDestinationPriceColor(row: Opportunity): CSSProperties {
+  if (!row.myDestinationSellQuantity || row.myDestinationSellPriceMin === null || row.destinationLowestSell === null) {
+    return {};
+  }
+  const undercut = row.myDestinationSellPriceMin > row.destinationLowestSell + 0.01;
+  return { backgroundColor: undercut ? "#fde2e2" : "#dcfce7", fontWeight: 650 };
 }
 
 function formatQuantity(value: number | null): string {

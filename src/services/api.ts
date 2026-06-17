@@ -233,6 +233,7 @@ function pendingOpportunity(product: Product): Opportunity {
     sellHub: "",
     buyPrice: null,
     sellReference: null,
+    destinationLowestSell: null,
     profitPerUnit: null,
     spread: null,
     sourceAvailable: null,
