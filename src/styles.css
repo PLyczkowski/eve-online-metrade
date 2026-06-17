@@ -1,0 +1,503 @@
+:root {
+  color: #1d2430;
+  background: #eef1f4;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto auto auto 1fr auto;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: center;
+  padding: 18px 22px;
+  background: #101820;
+  color: #f7fafc;
+  border-bottom: 3px solid #d6a43a;
+}
+
+.topbar h1,
+.topbar p {
+  margin: 0;
+}
+
+.topbar h1 {
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.topbar p {
+  color: #c4ccd4;
+  margin-top: 5px;
+}
+
+.topbar-actions,
+.toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.icon-button {
+  min-height: 34px;
+  min-width: 34px;
+  border: 1px solid #c7ced6;
+  background: #fff;
+  color: #1d2430;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.icon-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.text-button {
+  padding: 0 11px;
+}
+
+.summary-band {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(110px, 1fr));
+  gap: 1px;
+  background: #c9d0d8;
+  border-bottom: 1px solid #c9d0d8;
+}
+
+.summary-card {
+  background: #fff;
+  padding: 10px 16px;
+  display: grid;
+  gap: 4px;
+}
+
+.summary-card span {
+  color: #697481;
+  font-size: 12px;
+}
+
+.summary-card strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toolbar {
+  padding: 10px 14px;
+  background: #f8fafc;
+  border-bottom: 1px solid #d8dee6;
+}
+
+.api-burn-band {
+  display: grid;
+  grid-template-columns: minmax(230px, 340px) minmax(180px, 1fr) 82px;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 14px;
+  background: #f8fafc;
+  border-bottom: 1px solid #d8dee6;
+}
+
+.api-burn-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.api-burn-copy strong {
+  font-size: 13px;
+}
+
+.api-burn-copy span {
+  color: #697481;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.api-burn-track {
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dfe5eb;
+  border: 1px solid #cbd3dc;
+}
+
+.api-burn-fill {
+  height: 100%;
+  min-width: 2px;
+  transition: width 180ms ease;
+}
+
+.api-burn-fill.ok {
+  background: #2f855a;
+}
+
+.api-burn-fill.warn {
+  background: #d69e2e;
+}
+
+.api-burn-fill.danger {
+  background: #c53030;
+}
+
+.api-burn-label {
+  justify-self: end;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.api-burn-label.ok {
+  color: #276749;
+}
+
+.api-burn-label.warn {
+  color: #975a16;
+}
+
+.api-burn-label.danger {
+  color: #9b2c2c;
+}
+
+.search-box {
+  height: 34px;
+  min-width: 300px;
+  border: 1px solid #c7ced6;
+  border-radius: 6px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+}
+
+.search-box input {
+  border: 0;
+  outline: 0;
+  width: 100%;
+}
+
+select,
+.settings-list input {
+  height: 34px;
+  border: 1px solid #c7ced6;
+  border-radius: 6px;
+  background: #fff;
+  padding: 0 9px;
+}
+
+.toggle-control,
+.interval-control {
+  height: 34px;
+  border: 1px solid #c7ced6;
+  border-radius: 6px;
+  background: #fff;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.toggle-control input {
+  width: 16px;
+  height: 16px;
+  accent-color: #2f855a;
+}
+
+.interval-control input {
+  width: 76px;
+  height: 26px;
+  border: 1px solid #c7ced6;
+  border-radius: 5px;
+  padding: 0 6px;
+}
+
+.table-shell {
+  min-height: 0;
+  position: relative;
+}
+
+.table-scroll {
+  height: 100%;
+  overflow: auto;
+  background: #fff;
+}
+
+table {
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+th {
+  position: relative;
+  height: 36px;
+  text-align: left;
+  padding: 0 8px;
+  border-right: 1px solid #cbd2da;
+  border-bottom: 1px solid #b8c1ca;
+  background: #e9edf2;
+  color: #23303d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.column-header-button {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.column-header-button span {
+  flex: 0 0 auto;
+}
+
+.column-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  z-index: 3;
+}
+
+.column-resizer::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 3px;
+  width: 1px;
+  background: #9aa6b2;
+}
+
+.column-resizer:hover::after,
+.column-resizer.is-resizing::after {
+  left: 2px;
+  width: 3px;
+  background: #2b6cb0;
+}
+
+tbody {
+  position: relative;
+  display: block;
+}
+
+thead,
+tbody tr {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+
+tbody tr {
+  position: absolute;
+  height: 34px;
+}
+
+td {
+  height: 34px;
+  padding: 0 8px;
+  border-right: 1px solid #edf0f3;
+  border-bottom: 1px solid #edf0f3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+tbody tr:hover td {
+  box-shadow: inset 0 0 0 9999px rgba(219, 234, 254, 0.48);
+}
+
+.status-good td:first-child {
+  border-left: 4px solid #2f855a;
+}
+
+.status-pending td:first-child {
+  border-left: 4px solid #718096;
+}
+
+.status-low-spread td:first-child,
+.status-low-profit td:first-child,
+.status-low-traffic td:first-child {
+  border-left: 4px solid #d69e2e;
+}
+
+.status-no-sell-orders td:first-child,
+.status-no-jita-sell td:first-child,
+.status-no-amarr-sell td:first-child,
+.status-error td:first-child {
+  border-left: 4px solid #c53030;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 10;
+  min-width: 190px;
+  padding: 5px;
+  background: #fff;
+  border: 1px solid #bfc7d1;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.22);
+  border-radius: 6px;
+}
+
+.context-menu button {
+  width: 100%;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.context-menu button:hover {
+  background: #eef3f8;
+}
+
+.status-bar {
+  min-height: 34px;
+  padding: 7px 14px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  background: #101820;
+  color: #f7fafc;
+}
+
+.status-bar strong {
+  color: #fed7d7;
+  font-weight: 500;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.28);
+  display: grid;
+  place-items: center;
+  z-index: 20;
+}
+
+.settings-panel {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 60px);
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.28);
+}
+
+.settings-panel header {
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  border-bottom: 1px solid #d8dee6;
+}
+
+.settings-panel h2 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.settings-list {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  overflow: auto;
+  max-height: calc(100vh - 114px);
+}
+
+.settings-list label {
+  display: grid;
+  grid-template-columns: minmax(190px, 260px) minmax(130px, 1fr);
+  gap: 4px 10px;
+  align-items: center;
+}
+
+.settings-list small {
+  grid-column: 2;
+  color: #697481;
+}
+
+@media (max-width: 820px) {
+  .topbar,
+  .summary-band {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .summary-band {
+    display: grid;
+  }
+
+  .search-box {
+    min-width: 100%;
+  }
+
+  .api-burn-band {
+    grid-template-columns: 1fr;
+  }
+
+  .api-burn-label {
+    justify-self: start;
+  }
+}

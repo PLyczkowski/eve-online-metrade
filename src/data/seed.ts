@@ -1,0 +1,170 @@
+import type { Opportunity, Product, RefreshRun, Setting } from "../types";
+
+export const seedSettings: Setting[] = [
+  ["Jita station ID", "60003760", "Jita IV - Moon 4 - Caldari Navy Assembly Plant"],
+  ["Amarr station ID", "60008494", "Amarr VIII (Oris) - Emperor Family Academy"],
+  ["The Forge region ID", "10000002", "Jita region"],
+  ["Domain region ID", "10000043", "Amarr region"],
+  ["Minimum spread", "0.2", "20% default"],
+  ["Minimum estimated profit", "500000", "ISK"],
+  ["Minimum 30d source volume", "1", "Regional history traffic check"],
+  ["Minimum 30d destination volume", "1", "Regional history traffic check"],
+  ["History days", "30", "Use recent market history"],
+  ["Max items per refresh", "5", "Lowered after URL-fetch quota and ESI 429 errors."],
+  ["Delay between items ms", "300", "Slower requests reduce ESI pressure."],
+  ["Include weak rows", "TRUE", "TRUE keeps rejected rows with status notes"],
+  ["Raw order rows per item/route", "10", "Limits audit rows"],
+  ["ESI base URL", "https://esi.evetech.net/latest", "Public ESI, no login"],
+  ["User agent", "EVE Metrade local app", "Public ESI user agent"],
+  ["Automatic refresh enabled", "TRUE", "Controls background refresh"],
+  ["Automatic refresh interval seconds", "600", "Runs one batch every 10 minutes; keep this at 60 or higher for ESI safety."],
+  ["ESI low error-limit threshold", "20", "When ESI reports this many or fewer errors left, the app waits for reset."],
+  ["Estimated safe ESI calls per hour", "1200", "UI budget for the API burn-rate indicator."],
+  ["Auto-disable cold items", "TRUE", "After ESI validation, cold/low-traffic items are disabled to avoid future calls."],
+  ["Skip refresh if target 30d volume below", "50", "Skips already-known dead destination markets"]
+].map(([key, value, notes]) => ({ key, value, notes }));
+
+const productIds = [
+  2180, 2403, 2549, 3266, 3456, 3777, 3995, 4435, 10244, 11443, 14680, 14696,
+  14910, 14990, 31270, 31274, 31280, 31290, 31292, 31304, 31306, 31312,
+  31316, 31318, 31326, 31332, 31340, 31342, 31348, 31352, 31354, 31374,
+  31392, 31402, 31404, 31410, 31412, 31418, 31420, 31424, 31426, 31436,
+  31438, 31440, 31446, 31452, 31462, 31466, 31468, 31470, 31472, 31474,
+  31482, 31488, 31494, 31498, 31500, 31504, 31508, 31510, 31514, 31522,
+  31524, 31532, 31536, 31546, 31548, 31556, 31558, 31572, 31582, 31584,
+  31590, 31592, 31596, 31600, 31608, 31614, 31618, 31624, 31634, 31636,
+  31638, 31650, 31660, 31662, 31672, 31674, 31676, 31678, 31684, 31696,
+  31698, 31700, 31702, 31704, 31706, 31708, 31710, 31712, 31714, 31718,
+  31720, 31728, 31738, 31740, 31742, 31744, 31746, 31754, 31756, 31762,
+  31764, 31768, 31770, 31780, 31784, 31800, 31804, 31874, 31876, 31898,
+  31918, 31922, 31950, 31955, 31957, 31962, 31963, 31964, 31972, 32029,
+  32041, 32049, 32053, 32055, 32057, 32061, 32073, 32075, 32085, 32089,
+  32095, 32103, 32109, 32113, 32121, 32125, 32248, 32435, 32440, 32444,
+  32458, 32853, 32994, 32995, 33005, 33007, 33009, 33011, 33015, 33017,
+  33018, 33023, 33025, 33026, 33028, 33029, 33032, 33033, 33037, 33038,
+  33039, 33043, 33044, 33046, 33051, 33052, 33053, 33054, 33058, 33065,
+  33066, 33093, 33149, 33180, 33213, 33214, 33215, 33217, 33219, 33221,
+  33223, 33224, 33226, 33228, 33231, 33272, 33283, 33289, 33309, 33334,
+  33378, 33379, 33382, 33384, 33385, 33387, 33406, 33441, 33442, 33453,
+  33466, 33550, 33569, 33575, 33578, 33704, 33712, 33714, 33720, 33729,
+  33736, 33739, 33746, 33754, 33756, 33767, 33770, 33774, 33779, 33780,
+  33785, 33786, 33798, 33850, 33918, 33921, 33925, 33929, 33930, 33931,
+  33933, 33934, 33937, 33940, 33947, 33951, 33952, 33959, 33962, 33963,
+  33964, 33967, 33968, 33988, 34024, 34033, 34038, 34042, 34045, 34048,
+  34050, 34070, 34072, 34094, 34167, 34169, 34170, 34171, 34172, 34173,
+  34176, 34180, 34181, 34260, 34264, 34274, 34284, 34288, 34308, 34347,
+  34348, 34350, 34351, 34355, 34357, 34360, 34394, 34396, 34417, 34418,
+  34419, 34420, 34421, 34423, 34425, 34426, 34427, 34428, 34429, 34430,
+  34431, 34434, 34435, 34481, 34603, 34609, 34617, 34620, 34630, 34634,
+  34638, 34645, 34648
+];
+
+const productNames = new Map<number, string>([
+  [2180, "Guristas Scourge XL Cruise Missile"],
+  [2403, "Advanced Planetology"],
+  [3266, "Zainou 'Gypsy' CPU Management EE-604"],
+  [3456, "Jump Drive Operation"],
+  [10244, "Zainou 'Gypsy' Signature Analysis SA-703"],
+  [31270, "Medium Inverted Signal Field Projector II"],
+  [32994, "Barium Firework CXIV"],
+  [31876, "Caldari Navy Wasp"],
+  [33441, "Limos' Rapid Heavy Missile Launcher I"],
+  [2549, "Lava Command Center"],
+  [31874, "Caldari Navy Vespa"],
+  [33569, "Melted Snowball"],
+  [4435, "Eutectic Compact Cap Recharger"],
+  [31532, "Small Hybrid Burst Aerator II"],
+  [3777, "Long-limb Roes"],
+  [33180, "Scan Rangefinding Array I"],
+  [31718, "Medium EM Shield Reinforcer I"],
+  [31600, "Medium Hydraulic Bay Thrusters I"],
+  [33334, "Navy Cap Booster 75"],
+  [31764, "Small Core Defense Capacitor Safeguard I"],
+  [31412, "Small Semiconductor Memory Cell II"],
+  [31754, "Medium Thermal Shield Reinforcer I"],
+  [34260, "Surgical Warp Disrupt Probe"],
+  [31312, "Medium Signal Focusing Kit I"],
+  [11443, "Hydromagnetic Physics"],
+  [33704, "Medium Hull Maintenance Bot I"],
+  [31592, "Small Bay Loading Accelerator II"],
+  [3995, "Large EMP Smartbomb II"],
+  [33442, "Malkuth' Rapid Heavy Missile Launcher I"],
+  [31800, "Small Core Defense Field Purger I"],
+  [33011, "Small Freight Container"],
+  [32995, "Copper Firework CXIV"],
+  [31634, "Medium Warhead Flare Catalyst I"],
+  [31274, "Small Ionic Field Projector I"]
+]);
+
+export const seedProducts: Product[] = productIds.map((typeId) => ({
+  typeId,
+  name: productNames.get(typeId) ?? "",
+  enabled: true,
+  notes: ""
+}));
+
+export const seedOpportunities: Opportunity[] = [
+  ["GOOD", "Amarr -> Jita", 32994, "Barium Firework CXIV", "Amarr", "Jita", 14900, 18970, 4070, 0.2731543624, 1191, 4847370, 4999, 112820, 845, "", ""],
+  ["LOW SPREAD", "Amarr -> Jita", 31876, "Caldari Navy Wasp", "Amarr", "Jita", 2371000, 2385000, 14000, 0.0059046816, 2, 28000, 2929, 39711, 845, "", ""],
+  ["LOW SPREAD", "Amarr -> Jita", 33441, "Limos' Rapid Heavy Missile Launcher I", "Amarr", "Jita", 25110, 25690, 580, 0.0230983672, 1, 580, 624, 24597, 846, "", "Below minimum spread."],
+  ["LOW SPREAD", "Amarr -> Jita", 2549, "Lava Command Center", "Amarr", "Jita", 133300, 148700, 15400, 0.1155288822, 2, 30800, 4928, 21515, 842, "", "Below minimum spread."],
+  ["LOW SPREAD", "Jita -> Amarr", 31874, "Caldari Navy Vespa", "Jita", "Amarr", 1850000, 1989000, 139000, 0.0751351351, 340, 47260000, 100989, 9612, 846, "", ""],
+  ["LOW PROFIT", "Jita -> Amarr", 33569, "Melted Snowball", "Jita", "Amarr", 33.01, 399.9, 366.89, 11.1145107543, 800, 293512, 87131, 8365, 846, "", "Below minimum estimated profit."],
+  ["LOW SPREAD", "Jita -> Amarr", 4435, "Eutectic Compact Cap Recharger", "Jita", "Amarr", 13670, 14810, 1140, 0.0833942941, 12272, 13990080, 89872, 8320, 846, "", "Below minimum spread."],
+  ["LOW SPREAD", "Amarr -> Jita", 31532, "Small Hybrid Burst Aerator II", "Amarr", "Jita", 2244000, 2328000, 84000, 0.0374331551, 2, 168000, 267, 8209, 845, "", "Below minimum spread."],
+  ["LOW PROFIT", "Jita -> Amarr", 3777, "Long-limb Roes", "Jita", "Amarr", 2074, 4500, 2426, 1.1697203472, 30, 72780, 14901866, 7488, 842, "", "Below minimum estimated profit."],
+  ["GOOD", "Jita -> Amarr", 33180, "Scan Rangefinding Array I", "Jita", "Amarr", 113900, 157900, 44000, 0.3863037752, 93, 4092000, 42069, 5526, 842, "", ""],
+  ["GOOD", "Amarr -> Jita", 31412, "Small Semiconductor Memory Cell II", "Amarr", "Jita", 4790000, 20860000, 16070000, 3.3549060543, 1, 16070000, 480, 2077, 846, "Buy for 4,790,000.00?", "Both prices are sell orders; direction is chosen from lower sell price to higher sell price."]
+].map((row) => {
+  const [
+    status,
+    direction,
+    typeId,
+    itemName,
+    buyHub,
+    sellHub,
+    buyPrice,
+    sellReference,
+    profitPerUnit,
+    spread,
+    sourceAvailable,
+    estimatedProfit,
+    buyRegionVolume,
+    sellRegionVolume,
+    lastRefreshMinutes,
+    notes,
+    scriptNotes
+  ] = row;
+  return {
+    status,
+    direction,
+    typeId,
+    itemName,
+    buyHub,
+    sellHub,
+    buyPrice,
+    sellReference,
+    profitPerUnit,
+    spread,
+    sourceAvailable,
+    estimatedProfit,
+    buyRegionVolume,
+    sellRegionVolume,
+    lastRefresh: "2026-06-17 11:47:12",
+    lastRefreshMinutes,
+    notes,
+    scriptNotes
+  } as Opportunity;
+});
+
+export const seedRefreshRuns: RefreshRun[] = [
+  {
+    refreshTime: "2026-06-17 11:47:12",
+    itemsScanned: 5,
+    opportunitiesWritten: 5,
+    apiCalls: 20,
+    errors: "",
+    skipped: "Next starts at item 316 of 523",
+    durationSeconds: 10
+  }
+];

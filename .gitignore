@@ -1,0 +1,8 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+.vite-dev*.log
+.tauri-dev*.log
+*.sqlite3
+*.db
