@@ -26,6 +26,15 @@ export interface Setting {
   notes: string;
 }
 
+export interface TradeHub {
+  id: number;
+  name: string;
+  regionId: number;
+  stationId: number;
+  enabled: boolean;
+  priority: number;
+}
+
 export interface Opportunity {
   status: Status;
   direction: string;

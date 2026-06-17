@@ -31,6 +31,17 @@ struct Product {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TradeHub {
+    id: i64,
+    name: String,
+    region_id: i64,
+    station_id: i64,
+    enabled: bool,
+    priority: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct Setting {
     key: String,
     value: String,
@@ -159,6 +170,18 @@ struct HubPrices {
     available_at_lowest: f64,
 }
 
+struct HubMarketData {
+    hub: TradeHub,
+    prices: HubPrices,
+    volume: f64,
+}
+
+struct RouteCandidate<'a> {
+    buy: &'a HubMarketData,
+    sell: &'a HubMarketData,
+    profit: f64,
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -179,6 +202,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_opportunities,
             list_products,
+            list_trade_hubs,
             list_settings,
             list_refresh_runs,
             list_discovery_summary,
@@ -193,6 +217,7 @@ pub fn run() {
             reset_and_refresh,
             update_product_notes,
             update_setting,
+            set_trade_hub_enabled,
             set_product_enabled
         ])
         .run(tauri::generate_context!())
@@ -217,6 +242,12 @@ fn list_products(state: State<AppState>) -> Result<Vec<Product>, String> {
         .map_err(to_string)?,
     )?;
     Ok(result)
+}
+
+#[tauri::command]
+fn list_trade_hubs(state: State<AppState>) -> Result<Vec<TradeHub>, String> {
+    let conn = open(&state)?;
+    enabled_or_all_trade_hubs(&conn, false)
 }
 
 #[tauri::command]
@@ -385,6 +416,26 @@ fn set_product_enabled(
     )
     .map_err(to_string)?;
     get_product(&conn, type_id)
+}
+
+#[tauri::command]
+fn set_trade_hub_enabled(
+    state: State<AppState>,
+    id: i64,
+    enabled: bool,
+) -> Result<TradeHub, String> {
+    let conn = open(&state)?;
+    conn.execute(
+        "update trade_hubs set enabled = ?1 where id = ?2",
+        params![if enabled { 1 } else { 0 }, id],
+    )
+    .map_err(to_string)?;
+    conn.query_row(
+        "select id, name, region_id, station_id, enabled, priority from trade_hubs where id = ?1",
+        params![id],
+        trade_hub_from_row,
+    )
+    .map_err(to_string)
 }
 
 #[tauri::command]
@@ -930,62 +981,45 @@ fn fetch_and_analyze(
     api_calls: &mut i64,
 ) -> Result<Opportunity, String> {
     let base = setting(conn, "ESI base URL", "https://esi.evetech.net/latest");
-    let forge_region = setting(conn, "The Forge region ID", "10000002")
-        .parse::<i64>()
-        .unwrap_or(10000002);
-    let domain_region = setting(conn, "Domain region ID", "10000043")
-        .parse::<i64>()
-        .unwrap_or(10000043);
     let error_limit_threshold = setting(conn, "ESI low error-limit threshold", "20")
         .parse::<u64>()
         .unwrap_or(20);
     let metadata = product_with_metadata(conn, product, &base, api_calls, error_limit_threshold);
     let product = metadata.product;
-    let forge_orders: Vec<EsiOrder> = fetch_json(
-        conn,
-        &format!(
-            "{}/markets/{}/orders/?datasource=tranquility&order_type=sell&type_id={}&page=1",
-            base, forge_region, product.type_id
-        ),
-        api_calls,
-        error_limit_threshold,
-    )?;
-    let domain_orders: Vec<EsiOrder> = fetch_json(
-        conn,
-        &format!(
-            "{}/markets/{}/orders/?datasource=tranquility&order_type=sell&type_id={}&page=1",
-            base, domain_region, product.type_id
-        ),
-        api_calls,
-        error_limit_threshold,
-    )?;
-    let forge_history: Vec<HistoryRow> = fetch_json(
-        conn,
-        &format!(
-            "{}/markets/{}/history/?datasource=tranquility&type_id={}",
-            base, forge_region, product.type_id
-        ),
-        api_calls,
-        error_limit_threshold,
-    )?;
-    let domain_history: Vec<HistoryRow> = fetch_json(
-        conn,
-        &format!(
-            "{}/markets/{}/history/?datasource=tranquility&type_id={}",
-            base, domain_region, product.type_id
-        ),
-        api_calls,
-        error_limit_threshold,
-    )?;
-    Ok(analyze(
-        conn,
-        &product,
-        metadata.volume_m3,
-        forge_orders,
-        domain_orders,
-        recent_volume(&forge_history),
-        recent_volume(&domain_history),
-    ))
+    let hubs = enabled_or_all_trade_hubs(conn, true)?;
+    if hubs.len() < 2 {
+        return Ok(empty_opportunity(
+            "ERROR",
+            &product,
+            0.0,
+            0.0,
+            Utc::now().to_rfc3339(),
+            "Enable at least two trade hubs.",
+        ));
+    }
+    let mut markets = Vec::new();
+    for hub in hubs {
+        let orders: Vec<EsiOrder> = fetch_json(
+            conn,
+            &format!(
+                "{}/markets/{}/orders/?datasource=tranquility&order_type=sell&type_id={}&page=1",
+                base, hub.region_id, product.type_id
+            ),
+            api_calls,
+            error_limit_threshold,
+        )?;
+        let history: Vec<HistoryRow> = fetch_json(
+            conn,
+            &format!(
+                "{}/markets/{}/history/?datasource=tranquility&type_id={}",
+                base, hub.region_id, product.type_id
+            ),
+            api_calls,
+            error_limit_threshold,
+        )?;
+        markets.push((hub, orders, recent_volume(&history)));
+    }
+    Ok(analyze(conn, &product, metadata.volume_m3, markets))
 }
 
 fn product_with_metadata(
@@ -1054,17 +1088,8 @@ fn analyze(
     conn: &Connection,
     product: &Product,
     volume_m3: Option<f64>,
-    forge_orders: Vec<EsiOrder>,
-    domain_orders: Vec<EsiOrder>,
-    forge_volume: f64,
-    domain_volume: f64,
+    markets: Vec<(TradeHub, Vec<EsiOrder>, f64)>,
 ) -> Opportunity {
-    let jita_station = setting(conn, "Jita station ID", "60003760")
-        .parse::<i64>()
-        .unwrap_or(60003760);
-    let amarr_station = setting(conn, "Amarr station ID", "60008494")
-        .parse::<i64>()
-        .unwrap_or(60008494);
     let min_spread = setting(conn, "Minimum spread", "0.2")
         .parse::<f64>()
         .unwrap_or(0.2);
@@ -1090,71 +1115,70 @@ fn analyze(
         .unwrap_or(7900.0)
         .max(0.0);
     let refreshed = Utc::now().to_rfc3339();
-    let mut jita_sells: Vec<&EsiOrder> = forge_orders
+    let hub_markets: Vec<HubMarketData> = markets
         .iter()
-        .filter(|order| !order.is_buy_order && order.location_id == jita_station)
+        .map(|(hub, orders, volume)| {
+            let mut sells: Vec<&EsiOrder> = orders
+                .iter()
+                .filter(|order| !order.is_buy_order && order.location_id == hub.station_id)
+                .collect();
+            sells.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
+            HubMarketData {
+                hub: hub.clone(),
+                prices: hub_prices(&sells, sell_ref_min_units, sell_ref_min_isk),
+                volume: *volume,
+            }
+        })
         .collect();
-    let mut amarr_sells: Vec<&EsiOrder> = domain_orders
+    let available_hubs: Vec<&HubMarketData> = hub_markets
         .iter()
-        .filter(|order| !order.is_buy_order && order.location_id == amarr_station)
+        .filter(|hub| hub.prices.lowest_sell > 0.0)
         .collect();
-    jita_sells.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
-    amarr_sells.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
-    let jita_prices = hub_prices(&jita_sells, sell_ref_min_units, sell_ref_min_isk);
-    let amarr_prices = hub_prices(&amarr_sells, sell_ref_min_units, sell_ref_min_isk);
-    if jita_prices.lowest_sell == 0.0 && amarr_prices.lowest_sell == 0.0 {
+    if available_hubs.is_empty() {
         return empty_opportunity(
             "NO SELL ORDERS",
             product,
-            forge_volume,
-            domain_volume,
+            0.0,
+            0.0,
             refreshed,
-            "No sell orders at either hub station",
+            "No sell orders at enabled hub stations",
         );
     }
-    if jita_prices.lowest_sell == 0.0 {
+    if available_hubs.len() < 2 {
+        let volume = available_hubs.first().map(|hub| hub.volume).unwrap_or(0.0);
         return empty_opportunity(
-            "NO JITA SELL",
+            "NO SPREAD",
             product,
-            forge_volume,
-            domain_volume,
+            volume,
+            0.0,
             refreshed,
-            "No Jita sell orders at hub station",
+            "Only one enabled hub has sell orders.",
         );
     }
-    if amarr_prices.lowest_sell == 0.0 {
-        return empty_opportunity(
-            "NO AMARR SELL",
-            product,
-            forge_volume,
-            domain_volume,
-            refreshed,
-            "No Amarr sell orders at hub station",
-        );
+    let mut best: Option<RouteCandidate<'_>> = None;
+    for buy in &available_hubs {
+        for sell in &available_hubs {
+            if buy.hub.id == sell.hub.id {
+                continue;
+            }
+            let profit = sell.prices.reference_sell - buy.prices.lowest_sell;
+            if best
+                .as_ref()
+                .map(|route| profit > route.profit)
+                .unwrap_or(true)
+            {
+                best = Some(RouteCandidate { buy, sell, profit });
+            }
+        }
     }
-    let jita_to_amarr_profit = amarr_prices.reference_sell - jita_prices.lowest_sell;
-    let amarr_to_jita_profit = jita_prices.reference_sell - amarr_prices.lowest_sell;
-    let (buy_hub, sell_hub, buy_price, sell_reference, source_available, buy_volume, sell_volume): (&str, &str, f64, f64, f64, f64, f64) = if jita_to_amarr_profit >= amarr_to_jita_profit {
-        (
-            "Jita",
-            "Amarr",
-            jita_prices.lowest_sell,
-            amarr_prices.reference_sell,
-            jita_prices.available_at_lowest,
-            forge_volume,
-            domain_volume,
-        )
-    } else {
-        (
-            "Amarr",
-            "Jita",
-            amarr_prices.lowest_sell,
-            jita_prices.reference_sell,
-            amarr_prices.available_at_lowest,
-            domain_volume,
-            forge_volume,
-        )
-    };
+    let route = best.expect("at least two available hubs produce route candidates");
+    let buy_hub = route.buy.hub.name.as_str();
+    let sell_hub = route.sell.hub.name.as_str();
+    let buy_price = route.buy.prices.lowest_sell;
+    let sell_reference = route.sell.prices.reference_sell;
+    let source_available = route.buy.prices.available_at_lowest;
+    let buy_volume = route.buy.volume;
+    let sell_volume = route.sell.volume;
     let profit = sell_reference - buy_price;
     let spread = if buy_price > 0.0 {
         profit / buy_price
@@ -1264,6 +1288,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "
         create table if not exists products(type_id integer primary key, name text not null, enabled integer not null, notes text not null);
         create table if not exists settings(key text primary key, value text not null, notes text not null);
+        create table if not exists trade_hubs(
+          id integer primary key,
+          name text not null unique,
+          region_id integer not null,
+          station_id integer not null,
+          enabled integer not null,
+          priority integer not null
+        );
         create table if not exists item_types(type_id integer primary key, name text not null, source text not null, source_updated_at text not null);
         create table if not exists item_metadata(type_id integer primary key, volume_m3 real, source_updated_at text not null);
         create table if not exists market_aggregates(
@@ -1315,6 +1347,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "update settings set value = '7900' where key = 'Ship cargo capacity m3' and value = '60000'",
         [],
     )?;
+    seed_trade_hubs(conn)?;
     conn.execute(
         "insert into settings(key, value, notes) values ('Automatic refresh interval seconds', '600', 'Runs one batch every 10 minutes; keep this at 60 or higher for ESI safety.')
          on conflict(key) do nothing",
@@ -1385,6 +1418,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "Refresh stale timeout seconds",
             "600",
             "Marks a refresh failed if it does not complete within this time.",
+        ),
+        (
+            "Max enabled hubs for ESI refresh",
+            "3",
+            "Caps enabled trade hubs used per item to limit API calls.",
         ),
     ];
     for row in discovery_settings {
@@ -1527,6 +1565,11 @@ fn seed(conn: &Connection) -> rusqlite::Result<()> {
             "Refresh stale timeout seconds",
             "600",
             "Marks a refresh failed if it does not complete within this time.",
+        ),
+        (
+            "Max enabled hubs for ESI refresh",
+            "3",
+            "Caps enabled trade hubs used per item to limit API calls.",
         ),
         (
             "Skip refresh if target 30d volume below",
@@ -1809,6 +1852,57 @@ fn app_state(conn: &Connection, key: &str) -> String {
 fn set_app_state(conn: &Connection, key: &str, value: String) -> Result<(), String> {
     conn.execute("insert into app_state(key, value) values (?1, ?2) on conflict(key) do update set value = excluded.value", params![key, value]).map_err(to_string)?;
     Ok(())
+}
+
+fn seed_trade_hubs(conn: &Connection) -> rusqlite::Result<()> {
+    let hubs = [
+        (1, "Jita", 10000002, 60003760, 1, 1),
+        (2, "Amarr", 10000043, 60008494, 1, 2),
+        (3, "Dodixie", 10000032, 60011866, 1, 3),
+        (4, "Rens", 10000030, 60004588, 0, 4),
+        (5, "Hek", 10000042, 60005686, 0, 5),
+    ];
+    for hub in hubs {
+        conn.execute(
+            "insert into trade_hubs(id, name, region_id, station_id, enabled, priority)
+             values (?1, ?2, ?3, ?4, ?5, ?6)
+             on conflict(id) do update set name=excluded.name, region_id=excluded.region_id, station_id=excluded.station_id, priority=excluded.priority",
+            params![hub.0, hub.1, hub.2, hub.3, hub.4, hub.5],
+        )?;
+    }
+    Ok(())
+}
+
+fn enabled_or_all_trade_hubs(
+    conn: &Connection,
+    enabled_only: bool,
+) -> Result<Vec<TradeHub>, String> {
+    let sql = if enabled_only {
+        "select id, name, region_id, station_id, enabled, priority from trade_hubs where enabled = 1 order by priority, id"
+    } else {
+        "select id, name, region_id, station_id, enabled, priority from trade_hubs order by priority, id"
+    };
+    let mut stmt = conn.prepare(sql).map_err(to_string)?;
+    let mut hubs = rows(stmt.query_map([], trade_hub_from_row).map_err(to_string)?)?;
+    if enabled_only {
+        let max_hubs = setting(conn, "Max enabled hubs for ESI refresh", "3")
+            .parse::<usize>()
+            .unwrap_or(3)
+            .max(2);
+        hubs.truncate(max_hubs);
+    }
+    Ok(hubs)
+}
+
+fn trade_hub_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TradeHub> {
+    Ok(TradeHub {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        region_id: row.get(2)?,
+        station_id: row.get(3)?,
+        enabled: row.get::<_, i64>(4)? != 0,
+        priority: row.get(5)?,
+    })
 }
 
 fn get_refresh_job(conn: &Connection) -> Result<RefreshJob, String> {

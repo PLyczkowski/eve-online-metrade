@@ -92,7 +92,7 @@ select {
 
 .summary-band {
   display: grid;
-  grid-template-columns: repeat(8, minmax(110px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 1px;
   background: #c9d0d8;
   border-bottom: 1px solid #c9d0d8;
@@ -468,6 +468,32 @@ tbody tr:hover td {
   padding: 14px;
   overflow: auto;
   max-height: calc(100vh - 114px);
+}
+
+.settings-section {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #d8dee6;
+}
+
+.settings-section h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.hub-list {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-list .hub-row {
+  grid-template-columns: 18px minmax(100px, 180px) 1fr;
+  gap: 8px;
+}
+
+.hub-row small {
+  grid-column: auto;
 }
 
 .settings-list label {

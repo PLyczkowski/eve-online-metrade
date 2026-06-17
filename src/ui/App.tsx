@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, DatabaseZap, Play, RefreshCw, RotateCcw, Search, Settings, Square, X } from "lucide-react";
 import { OpportunityTable } from "./OpportunityTable";
 import { api } from "../services/api";
-import type { ApiLimitStatus, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting } from "../types";
+import type { ApiLimitStatus, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting, TradeHub } from "../types";
 
 const emptyFilters: Filters = { search: "", status: "ALL", direction: "ALL" };
 const filterStorageKey = "eve-metrade-filters-v1";
@@ -15,6 +15,7 @@ const toolbarSettingKeys = new Set([
 export function App() {
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [tradeHubs, setTradeHubs] = useState<TradeHub[]>([]);
   const [settings, setSettings] = useState<Setting[]>([]);
   const [runs, setRuns] = useState<RefreshRun[]>([]);
   const [refreshJob, setRefreshJob] = useState<RefreshJob | null>(null);
@@ -32,9 +33,10 @@ export function App() {
   const lastJobStatusRef = useRef<string | null>(null);
 
   async function load() {
-    const [opportunityRows, productRows, settingRows, runRows, discoverySummary, apiLimitStatus, jobStatus] = await Promise.all([
+    const [opportunityRows, productRows, hubRows, settingRows, runRows, discoverySummary, apiLimitStatus, jobStatus] = await Promise.all([
       api.listOpportunities(filters),
       api.listProducts(),
+      api.listTradeHubs(),
       api.listSettings(),
       api.listRefreshRuns(),
       api.listDiscoverySummary(),
@@ -43,6 +45,7 @@ export function App() {
     ]);
     setOpportunities(opportunityRows);
     setProducts(productRows);
+    setTradeHubs(hubRows);
     setSettings(settingRows);
     setRuns(runRows);
     setDiscovery(discoverySummary);
@@ -71,6 +74,7 @@ export function App() {
 
   const latestRun = runs[0];
   const enabledCount = products.filter((product) => product.enabled).length;
+  const enabledHubCount = tradeHubs.filter((hub) => hub.enabled).length;
   const automaticEnabled = settingValue(settings, "Automatic refresh enabled") !== "FALSE";
   const automaticIntervalSeconds = Math.max(60, Number(settingValue(settings, "Automatic refresh interval seconds")) || 600);
   const refreshRunning = refreshJob?.status === "running";
@@ -175,12 +179,16 @@ export function App() {
     await runAction("Discovered hot products", api.discoverHotProducts);
   }
 
+  async function toggleTradeHub(id: number, enabled: boolean) {
+    await runAction("Updated trade hub", () => api.setTradeHubEnabled(id, enabled));
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
         <div>
           <h1>EVE Metrade</h1>
-          <p>Jita and Amarr hauling opportunities from public ESI market data.</p>
+          <p>Trade hub hauling opportunities from public ESI market data.</p>
         </div>
         <div className="topbar-actions">
           <button className="icon-button text-button" onClick={() => startRefreshJob("Refresh next batch", api.startRefreshNextBatch)} disabled={refreshRunning}>
@@ -201,6 +209,7 @@ export function App() {
       <section className="summary-band">
         <SummaryCard label="Rows" value={opportunities.length.toString()} />
         <SummaryCard label="Enabled products" value={enabledCount.toString()} />
+        <SummaryCard label="Enabled hubs" value={enabledHubCount.toString()} />
         <SummaryCard label="Known items" value={discovery ? compactNumber(discovery.knownItems) : "0"} />
         <SummaryCard label="Hot candidates" value={discovery ? compactNumber(discovery.candidates) : "0"} />
         <SummaryCard label="Automatic refresh" value={automaticEnabled ? "ON" : "OFF"} icon={automaticEnabled ? <CheckCircle2 size={16} /> : <Square size={16} />} />
@@ -234,8 +243,7 @@ export function App() {
         </select>
         <select value={filters.direction} onChange={(event) => setFilters((current) => ({ ...current, direction: event.target.value }))}>
           <option>ALL</option>
-          <option>{"Jita -> Amarr"}</option>
-          <option>{"Amarr -> Jita"}</option>
+          {directionOptions(opportunities).map((direction) => <option key={direction}>{direction}</option>)}
         </select>
         <button className="icon-button text-button" onClick={() => setFilters(emptyFilters)}>
           <X size={16} /> Clear filters
@@ -308,8 +316,10 @@ export function App() {
       {settingsOpen ? (
         <SettingsPanel
           settings={settings.filter((setting) => !toolbarSettingKeys.has(setting.key))}
+          tradeHubs={tradeHubs}
           onClose={() => setSettingsOpen(false)}
           onSave={(key, value) => runAction("Saved setting", () => api.updateSetting(key, value))}
+          onToggleHub={toggleTradeHub}
         />
       ) : null}
     </main>
@@ -325,7 +335,19 @@ function SummaryCard({ label, value, icon }: { label: string; value: string; ico
   );
 }
 
-function SettingsPanel({ settings, onClose, onSave }: { settings: Setting[]; onClose: () => void; onSave: (key: string, value: string) => Promise<void> }) {
+function SettingsPanel({
+  settings,
+  tradeHubs,
+  onClose,
+  onSave,
+  onToggleHub
+}: {
+  settings: Setting[];
+  tradeHubs: TradeHub[];
+  onClose: () => void;
+  onSave: (key: string, value: string) => Promise<void>;
+  onToggleHub: (id: number, enabled: boolean) => Promise<void>;
+}) {
   const [draft, setDraft] = useState<Record<string, string>>(() => Object.fromEntries(settings.map((setting) => [setting.key, setting.value])));
   function setDraftValue(key: string, value: string) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -338,6 +360,22 @@ function SettingsPanel({ settings, onClose, onSave }: { settings: Setting[]; onC
           <button className="icon-button" onClick={onClose} title="Close"><X size={18} /></button>
         </header>
         <div className="settings-list">
+          <section className="settings-section">
+            <h3>Trade hubs</h3>
+            <div className="hub-list">
+              {tradeHubs.map((hub) => (
+                <label key={hub.id} className="hub-row">
+                  <input
+                    type="checkbox"
+                    checked={hub.enabled}
+                    onChange={(event) => onToggleHub(hub.id, event.target.checked)}
+                  />
+                  <span>{hub.name}</span>
+                  <small>Region {hub.regionId}, station {hub.stationId}</small>
+                </label>
+              ))}
+            </div>
+          </section>
           {settings.map((setting) => {
             const value = draft[setting.key] ?? "";
             const kind = settingInputKind(setting);
@@ -378,6 +416,10 @@ function SettingsPanel({ settings, onClose, onSave }: { settings: Setting[]; onC
       </section>
     </div>
   );
+}
+
+function directionOptions(rows: Opportunity[]): string[] {
+  return Array.from(new Set(rows.map((row) => row.direction).filter(Boolean))).sort();
 }
 
 function readSavedFilters(): Filters {

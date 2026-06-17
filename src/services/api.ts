@@ -1,10 +1,11 @@
-import type { ApiLimitStatus, DiscoveryRun, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting } from "../types";
+import type { ApiLimitStatus, DiscoveryRun, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting, TradeHub } from "../types";
 import { seedOpportunities, seedProducts, seedRefreshRuns, seedSettings } from "../data/seed";
 import { analyzeOpportunity, defaultMarketConfig, shouldSkipLowTargetVolume } from "../domain/market";
 
 type Command =
   | "list_opportunities"
   | "list_products"
+  | "list_trade_hubs"
   | "list_settings"
   | "list_refresh_runs"
   | "list_discovery_summary"
@@ -19,11 +20,13 @@ type Command =
   | "reset_and_refresh"
   | "update_product_notes"
   | "update_setting"
+  | "set_trade_hub_enabled"
   | "set_product_enabled";
 
 interface StoreShape {
   products: Product[];
   settings: Setting[];
+  tradeHubs: TradeHub[];
   opportunities: Opportunity[];
   refreshRuns: RefreshRun[];
   refreshJob: RefreshJob;
@@ -50,6 +53,9 @@ export const api = {
   },
   listProducts() {
     return call<Product[]>("list_products");
+  },
+  listTradeHubs() {
+    return call<TradeHub[]>("list_trade_hubs");
   },
   listSettings() {
     return call<Setting[]>("list_settings");
@@ -93,6 +99,9 @@ export const api = {
   updateSetting(key: string, value: string) {
     return call<Setting>("update_setting", { key, value });
   },
+  setTradeHubEnabled(id: number, enabled: boolean) {
+    return call<TradeHub>("set_trade_hub_enabled", { id, enabled });
+  },
   setProductEnabled(typeId: number, enabled: boolean) {
     return call<Product>("set_product_enabled", { typeId, enabled });
   }
@@ -102,6 +111,7 @@ async function fallbackCommand<T>(command: Command, args?: Record<string, unknow
   const store = readStore();
   if (command === "list_opportunities") return filterOpportunities(mergedOpportunityRows(store), args?.filters as Filters) as T;
   if (command === "list_products") return store.products as T;
+  if (command === "list_trade_hubs") return store.tradeHubs as T;
   if (command === "list_settings") return store.settings as T;
   if (command === "list_refresh_runs") return store.refreshRuns.slice().reverse() as T;
   if (command === "list_discovery_summary") return fallbackDiscoverySummary(store) as T;
@@ -110,6 +120,7 @@ async function fallbackCommand<T>(command: Command, args?: Record<string, unknow
   if (command === "discover_hot_products") return fallbackDiscoverHotProducts(store) as T;
   if (command === "update_product_notes") return updateProductNotes(store, Number(args?.typeId), String(args?.notes ?? "")) as T;
   if (command === "update_setting") return updateSetting(store, String(args?.key), String(args?.value ?? "")) as T;
+  if (command === "set_trade_hub_enabled") return setTradeHubEnabled(store, Number(args?.id), Boolean(args?.enabled)) as T;
   if (command === "set_product_enabled") return setProductEnabled(store, Number(args?.typeId), Boolean(args?.enabled)) as T;
   if (command === "refresh_product") return refreshOneFallback(store, Number(args?.typeId)) as T;
   if (command === "refresh_next_batch") return refreshBatchFallback(store, false) as T;
@@ -125,11 +136,13 @@ function readStore(): StoreShape {
   if (stored) {
     const store = JSON.parse(stored) as StoreShape;
     if (!store.refreshJob) store.refreshJob = idleJob();
+    if (!store.tradeHubs) store.tradeHubs = seedTradeHubs();
     return store;
   }
   const store: StoreShape = {
     products: seedProducts,
     settings: seedSettings,
+    tradeHubs: seedTradeHubs(),
     opportunities: seedOpportunities,
     refreshRuns: seedRefreshRuns,
     refreshJob: idleJob(),
@@ -137,6 +150,16 @@ function readStore(): StoreShape {
   };
   writeStore(store);
   return store;
+}
+
+function seedTradeHubs(): TradeHub[] {
+  return [
+    { id: 1, name: "Jita", regionId: 10000002, stationId: 60003760, enabled: true, priority: 1 },
+    { id: 2, name: "Amarr", regionId: 10000043, stationId: 60008494, enabled: true, priority: 2 },
+    { id: 3, name: "Dodixie", regionId: 10000032, stationId: 60011866, enabled: true, priority: 3 },
+    { id: 4, name: "Rens", regionId: 10000030, stationId: 60004588, enabled: false, priority: 4 },
+    { id: 5, name: "Hek", regionId: 10000042, stationId: 60005686, enabled: false, priority: 5 }
+  ];
 }
 
 function writeStore(store: StoreShape) {
@@ -285,6 +308,15 @@ function updateSetting(store: StoreShape, key: string, value: string): Setting {
   setting.value = value;
   writeStore(store);
   return setting;
+}
+
+function setTradeHubEnabled(store: StoreShape, id: number, enabled: boolean): TradeHub {
+  if (!store.tradeHubs) store.tradeHubs = seedTradeHubs();
+  const hub = store.tradeHubs.find((row) => row.id === id);
+  if (!hub) throw new Error(`Unknown trade hub ${id}`);
+  hub.enabled = enabled;
+  writeStore(store);
+  return hub;
 }
 
 function setProductEnabled(store: StoreShape, typeId: number, enabled: boolean): Product {
