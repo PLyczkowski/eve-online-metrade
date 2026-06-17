@@ -2689,7 +2689,13 @@ fn recover_stale_refresh_job(conn: &Connection) -> Result<(), String> {
         .map_err(to_string)?
         .with_timezone(&Utc);
     let age_seconds = (Utc::now() - started).num_seconds();
-    if age_seconds <= timeout_seconds {
+    let appears_complete = job.total_count > 0 && job.scanned_count >= job.total_count;
+    let effective_timeout = if appears_complete {
+        120.min(timeout_seconds)
+    } else {
+        timeout_seconds
+    };
+    if age_seconds <= effective_timeout {
         return Ok(());
     }
     let last_item = if job.current_item.is_empty() {

@@ -12,6 +12,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Opportunity } from "../types";
 import { formatIsk, formatPercent } from "../domain/format";
 
+const columnSizingStorageKey = "eve-metrade-column-sizing-v1";
+
 interface Props {
   rows: Opportunity[];
   onRefreshRow: (typeId: number) => Promise<void>;
@@ -21,7 +23,7 @@ interface Props {
 
 export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisableProduct }: Props) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "estimatedProfit", desc: true }]);
-  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({});
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(() => readSavedColumnSizing());
   const [menu, setMenu] = useState<{ x: number; y: number; row: Opportunity } | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -30,8 +32,6 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
     { accessorKey: "direction", header: "Direction", size: 130 },
     { accessorKey: "typeId", header: "Type ID", size: 90 },
     { accessorKey: "itemName", header: "Item Name", size: 260 },
-    { accessorKey: "buyHub", header: "Buy Hub", size: 90 },
-    { accessorKey: "sellHub", header: "Sell Hub", size: 90 },
     { accessorKey: "buyPrice", header: "Buy Price", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "sellReference", header: "Sell Ref", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "spread", header: "Spread", size: 95, cell: ({ getValue }) => formatPercent(getValue<number | null>()) },
@@ -51,7 +51,13 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
     columns,
     state: { sorting, columnSizing },
     onSortingChange: setSorting,
-    onColumnSizingChange: setColumnSizing,
+    onColumnSizingChange: (updater) => {
+      setColumnSizing((current) => {
+        const next = typeof updater === "function" ? updater(current) : updater;
+        localStorage.setItem(columnSizingStorageKey, JSON.stringify(next));
+        return next;
+      });
+    },
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     columnResizeMode: "onEnd"
@@ -159,11 +165,22 @@ function cellColor(columnId: string, row: Opportunity): CSSProperties {
 }
 
 function myDestinationPriceColor(row: Opportunity): CSSProperties {
-  if (!row.myDestinationSellQuantity || row.myDestinationSellPriceMin === null || row.destinationLowestSell === null) {
+  if (!row.myDestinationSellQuantity || row.myDestinationSellPriceMin === null) {
     return {};
   }
-  const undercut = row.myDestinationSellPriceMin > row.destinationLowestSell + 0.01;
+  const publicPrice = row.destinationLowestSell ?? row.sellReference;
+  if (publicPrice === null) return {};
+  const undercut = row.myDestinationSellPriceMin > publicPrice + 0.01;
   return { backgroundColor: undercut ? "#fde2e2" : "#dcfce7", fontWeight: 650 };
+}
+
+function readSavedColumnSizing(): ColumnSizingState {
+  try {
+    const saved = localStorage.getItem(columnSizingStorageKey);
+    return saved ? JSON.parse(saved) as ColumnSizingState : {};
+  } catch {
+    return {};
+  }
 }
 
 function formatQuantity(value: number | null): string {
