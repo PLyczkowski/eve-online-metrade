@@ -183,6 +183,9 @@ export interface MarketConfig {
   shipCargoCapacityM3: number;
   suggestedBuyDestinationVolumePercent: number;
   scoreTargetProfit: number;
+  scoreProfitWeight: number;
+  scoreSellThroughWeight: number;
+  scoreCargoWeight: number;
 }
 
 export interface AnalyzeInput {

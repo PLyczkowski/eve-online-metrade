@@ -467,6 +467,18 @@ fn list_opportunities(
         .parse::<f64>()
         .unwrap_or(100000000.0)
         .max(1.0);
+    let score_profit_weight = setting(&conn, "Score profit weight", "50")
+        .parse::<f64>()
+        .unwrap_or(50.0)
+        .max(0.0);
+    let score_sell_through_weight = setting(&conn, "Score sell-through weight", "40")
+        .parse::<f64>()
+        .unwrap_or(40.0)
+        .max(0.0);
+    let score_cargo_weight = setting(&conn, "Score cargo weight", "10")
+        .parse::<f64>()
+        .unwrap_or(10.0)
+        .max(0.0);
     let mut stmt = conn
         .prepare(
             "select coalesce(o.status, 'PENDING'),
@@ -563,7 +575,13 @@ fn list_opportunities(
         .map_err(to_string)?,
     )?;
     for row in &mut result {
-        row.score = opportunity_score(row, score_target_profit);
+        row.score = opportunity_score(
+            row,
+            score_target_profit,
+            score_profit_weight,
+            score_sell_through_weight,
+            score_cargo_weight,
+        );
     }
     let search = filters.search.trim().to_lowercase();
     result.retain(|row| {
@@ -1485,11 +1503,18 @@ fn hub_prices(orders: &[&EsiOrder], min_units: f64, min_isk_depth: f64) -> HubPr
     }
 }
 
-fn opportunity_score(row: &Opportunity, target_profit: f64) -> Option<f64> {
+fn opportunity_score(
+    row: &Opportunity,
+    target_profit: f64,
+    profit_weight: f64,
+    sell_through_weight: f64,
+    cargo_weight: f64,
+) -> Option<f64> {
     let estimated_profit = row.estimated_profit?;
     if estimated_profit <= 0.0 {
         return Some(0.0);
     }
+    let total_weight = (profit_weight + sell_through_weight + cargo_weight).max(1.0);
     let profit_score = (estimated_profit / target_profit.max(1.0)).clamp(0.0, 1.0);
     let cargo_score = row
         .cargo_used_percent
@@ -1501,7 +1526,13 @@ fn opportunity_score(row: &Opportunity, target_profit: f64) -> Option<f64> {
         }
         _ => 0.0,
     };
-    Some(((profit_score * 0.65) + (velocity_score * 0.25) + (cargo_score * 0.10)) * 100.0)
+    Some(
+        ((profit_score * profit_weight)
+            + (velocity_score * sell_through_weight)
+            + (cargo_score * cargo_weight))
+            / total_weight
+            * 100.0,
+    )
 }
 fn cargo_unit_capacity(cargo_m3: f64, volume_m3: Option<f64>) -> Option<f64> {
     let volume = volume_m3?;
@@ -1727,6 +1758,21 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "Score target profit ISK",
             "100000000",
             "Estimated profit that gives full profit score.",
+        ),
+        (
+            "Score profit weight",
+            "50",
+            "Relative score weight for estimated profit.",
+        ),
+        (
+            "Score sell-through weight",
+            "40",
+            "Relative score weight for destination volume versus suggested buy amount.",
+        ),
+        (
+            "Score cargo weight",
+            "10",
+            "Relative score weight for using less cargo space.",
         ),
         (
             "EVE SSO client ID",
