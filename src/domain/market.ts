@@ -32,7 +32,8 @@ export const defaultMarketConfig: MarketConfig = {
   sellReferenceMinimumUnits: 5,
   sellReferenceMinimumIskDepth: 25000000,
   shipCargoCapacityM3: 7900,
-  suggestedBuyDestinationVolumePercent: 0.3
+  suggestedBuyDestinationVolumePercent: 0.3,
+  scoreTargetProfit: 100000000
 };
 
 export function recentVolume(history: MarketHistoryRow[], days: number, now = new Date()): number {
@@ -73,6 +74,7 @@ export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
   const suggestedBuyQuantity = suggestedBuyUnits(sourceAvailable, cargoUnits, destinationVolumeUnits);
   const estimatedProfit = Math.max(0, suggestedBuyQuantity * profitPerUnit);
   const cargoUsedPercent = cargoUsedFraction(config.shipCargoCapacityM3, product.volumeM3 ?? null, suggestedBuyQuantity);
+  const score = opportunityScore(estimatedProfit, cargoUsedPercent, suggestedBuyQuantity, sellHub.volume, config.scoreTargetProfit);
 
   let status: Opportunity["status"] = "GOOD";
   let scriptNotes = "Both prices are sell orders; direction is chosen from lower sell price to higher sell price.";
@@ -104,6 +106,7 @@ export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
     spread,
     sourceAvailable,
     estimatedProfit,
+    score,
     cargoUsedPercent,
     suggestedBuyQuantity,
     myDestinationSellPriceMin: null,
@@ -167,6 +170,17 @@ function cargoUsedFraction(cargoM3: number, volumeM3: number | null, estimatedUn
   return Math.min(1, Math.max(0, (estimatedUnits * volumeM3) / cargoM3));
 }
 
+function opportunityScore(estimatedProfit: number | null, cargoUsedPercent: number | null, suggestedBuyQuantity: number | null, sellRegionVolume: number | null, targetProfit: number): number | null {
+  if (estimatedProfit === null) return null;
+  if (estimatedProfit <= 0) return 0;
+  const profitScore = Math.min(1, Math.max(0, estimatedProfit / Math.max(1, targetProfit)));
+  const cargoScore = cargoUsedPercent === null ? 0.5 : Math.min(1, Math.max(0, 1 - cargoUsedPercent));
+  const velocityScore = suggestedBuyQuantity !== null && sellRegionVolume !== null && suggestedBuyQuantity > 0 && sellRegionVolume > 0
+    ? Math.min(1, Math.max(0, 1 - Math.min(1, suggestedBuyQuantity / sellRegionVolume)))
+    : 0;
+  return (profitScore * 0.65 + velocityScore * 0.25 + cargoScore * 0.1) * 100;
+}
+
 function emptyMarketRow(
   status: Opportunity["status"],
   typeId: number,
@@ -191,6 +205,7 @@ function emptyMarketRow(
     spread: null,
     sourceAvailable: null,
     estimatedProfit: null,
+    score: null,
     cargoUsedPercent: null,
     suggestedBuyQuantity: null,
     myDestinationSellPriceMin: null,

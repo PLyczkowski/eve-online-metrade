@@ -49,6 +49,7 @@ export interface Opportunity {
   spread: number | null;
   sourceAvailable: number | null;
   estimatedProfit: number | null;
+  score: number | null;
   cargoUsedPercent: number | null;
   suggestedBuyQuantity: number | null;
   myDestinationSellPriceMin: number | null;
@@ -181,6 +182,7 @@ export interface MarketConfig {
   sellReferenceMinimumIskDepth: number;
   shipCargoCapacityM3: number;
   suggestedBuyDestinationVolumePercent: number;
+  scoreTargetProfit: number;
 }
 
 export interface AnalyzeInput {

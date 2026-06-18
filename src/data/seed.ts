@@ -25,6 +25,7 @@ export const seedSettings: Setting[] = [
   ["Sell reference minimum ISK depth", "25000000", "Use this cumulative ISK depth as an alternate sell-reference threshold."],
   ["Ship cargo capacity m3", "7900", "Maximum cargo volume used to cap estimated profit."],
   ["Suggested buy max destination 30d volume percent", "0.3", "Suggested buy quantity will not exceed this share of destination 30-day volume."],
+  ["Score target profit ISK", "100000000", "Estimated profit that gives full profit score."],
   ["Refresh stale timeout seconds", "600", "Marks a refresh failed if it does not complete within this time."],
   ["Skip refresh if target 30d volume below", "50", "Skips already-known dead destination markets"]
 ].map(([key, value, notes]) => ({ key, value, notes }));
@@ -154,6 +155,7 @@ export const seedOpportunities: Opportunity[] = [
     spread,
     sourceAvailable,
     estimatedProfit,
+    score: null,
     cargoUsedPercent: null,
     suggestedBuyQuantity: null,
     myDestinationSellPriceMin: null,

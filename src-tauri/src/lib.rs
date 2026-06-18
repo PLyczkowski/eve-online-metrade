@@ -69,6 +69,7 @@ struct Opportunity {
     spread: Option<f64>,
     source_available: Option<f64>,
     estimated_profit: Option<f64>,
+    score: Option<f64>,
     cargo_used_percent: Option<f64>,
     suggested_buy_quantity: Option<f64>,
     my_destination_sell_price_min: Option<f64>,
@@ -462,6 +463,10 @@ fn list_opportunities(
     .parse::<f64>()
     .unwrap_or(0.3)
     .clamp(0.0, 1.0);
+    let score_target_profit = setting(&conn, "Score target profit ISK", "100000000")
+        .parse::<f64>()
+        .unwrap_or(100000000.0)
+        .max(1.0);
     let mut stmt = conn
         .prepare(
             "select coalesce(o.status, 'PENDING'),
@@ -557,6 +562,9 @@ fn list_opportunities(
         )
         .map_err(to_string)?,
     )?;
+    for row in &mut result {
+        row.score = opportunity_score(row, score_target_profit);
+    }
     let search = filters.search.trim().to_lowercase();
     result.retain(|row| {
         (filters.status == "ALL" || row.status == filters.status)
@@ -1422,6 +1430,7 @@ fn analyze(
         spread: Some(spread),
         source_available: Some(source_available),
         estimated_profit: Some(estimated_profit),
+        score: None,
         cargo_used_percent,
         suggested_buy_quantity: Some(suggested_buy_quantity),
         my_destination_sell_price_min: None,
@@ -1476,6 +1485,24 @@ fn hub_prices(orders: &[&EsiOrder], min_units: f64, min_isk_depth: f64) -> HubPr
     }
 }
 
+fn opportunity_score(row: &Opportunity, target_profit: f64) -> Option<f64> {
+    let estimated_profit = row.estimated_profit?;
+    if estimated_profit <= 0.0 {
+        return Some(0.0);
+    }
+    let profit_score = (estimated_profit / target_profit.max(1.0)).clamp(0.0, 1.0);
+    let cargo_score = row
+        .cargo_used_percent
+        .map(|value| (1.0 - value).clamp(0.0, 1.0))
+        .unwrap_or(0.5);
+    let velocity_score = match (row.suggested_buy_quantity, row.sell_region_volume) {
+        (Some(suggested), Some(volume)) if suggested > 0.0 && volume > 0.0 => {
+            (1.0 - (suggested / volume).clamp(0.0, 1.0)).clamp(0.0, 1.0)
+        }
+        _ => 0.0,
+    };
+    Some(((profit_score * 0.65) + (velocity_score * 0.25) + (cargo_score * 0.10)) * 100.0)
+}
 fn cargo_unit_capacity(cargo_m3: f64, volume_m3: Option<f64>) -> Option<f64> {
     let volume = volume_m3?;
     if cargo_m3 <= 0.0 || volume <= 0.0 {
@@ -1695,6 +1722,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "Suggested buy max destination 30d volume percent",
             "0.3",
             "Suggested buy quantity will not exceed this share of destination 30-day volume.",
+        ),
+        (
+            "Score target profit ISK",
+            "100000000",
+            "Estimated profit that gives full profit score.",
         ),
         (
             "EVE SSO client ID",
@@ -3060,6 +3092,7 @@ fn empty_opportunity(
         spread: None,
         source_available: None,
         estimated_profit: None,
+        score: None,
         cargo_used_percent: None,
         suggested_buy_quantity: None,
         my_destination_sell_price_min: None,
@@ -3109,6 +3142,7 @@ fn opportunity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Opportunity
         spread: row.get(10)?,
         source_available: row.get(11)?,
         estimated_profit: row.get(12)?,
+        score: None,
         cargo_used_percent: row.get(13)?,
         suggested_buy_quantity: row.get(14)?,
         my_destination_sell_price_min: row.get(15)?,

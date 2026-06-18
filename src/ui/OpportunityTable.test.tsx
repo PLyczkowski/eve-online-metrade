@@ -17,6 +17,7 @@ const row: Opportunity = {
   spread: 0.3863,
   sourceAvailable: 93,
   estimatedProfit: 4092000,
+  score: 42,
   cargoUsedPercent: 0.42,
   suggestedBuyQuantity: 93,
   myDestinationSellPriceMin: null,

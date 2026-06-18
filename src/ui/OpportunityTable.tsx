@@ -48,6 +48,7 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
     { accessorKey: "sourceAvailable", header: "Source Avail", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "suggestedBuyQuantity", header: "Suggested Buy", size: 125, cell: ({ getValue }) => formatQuantity(getValue<number | null>()) },
     { accessorKey: "estimatedProfit", header: "Est. Profit", size: 130, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "score", header: "Score", size: 90, cell: ({ getValue }) => formatScore(getValue<number | null>()) },
     { accessorKey: "cargoUsedPercent", header: "Cargo Used", size: 115, cell: ({ getValue }) => formatPercent(getValue<number | null>()) },
     { accessorKey: "myDestinationSellQuantity", header: "My Dest Qty", size: 120, cell: ({ getValue }) => formatQuantity(getValue<number | null>()) },
     { id: "myDestinationSellPrice", header: "My Dest Price", size: 140, cell: ({ row }) => formatPriceRange(row.original.myDestinationSellPriceMin, row.original.myDestinationSellPriceMax) },
@@ -234,6 +235,7 @@ function cellColor(columnId: string, row: Opportunity): CSSProperties {
   if (columnId === "spread") return { backgroundColor: greenScale(row.spread ?? 0, 0.2, 1.0) };
   if (columnId === "suggestedBuyQuantity") return row.suggestedBuyQuantity ? { backgroundColor: "#ecfccb" } : {};
   if (columnId === "estimatedProfit") return { backgroundColor: greenScale(row.estimatedProfit ?? 0, 500000, 100000000) };
+  if (columnId === "score") return { backgroundColor: greenScale(row.score ?? 0, 0, 100), fontWeight: row.score ? 650 : undefined };
   if (columnId === "cargoUsedPercent") return { backgroundColor: greenScale(row.cargoUsedPercent ?? 0, 0.25, 1.0) };
   if (columnId === "myDestinationSellQuantity") {
     return row.myDestinationSellQuantity ? { backgroundColor: "#dbeafe" } : {};
@@ -267,6 +269,11 @@ function readSavedColumnSizing(): ColumnSizingState {
 function formatQuantity(value: number | null): string {
   if (value === null || Number.isNaN(value) || value <= 0) return "";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatScore(value: number | null): string {
+  if (value === null || Number.isNaN(value)) return "";
+  return value.toFixed(0);
 }
 
 function formatPriceRange(min: number | null, max: number | null): string {
