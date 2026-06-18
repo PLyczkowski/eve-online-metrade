@@ -82,4 +82,23 @@ describe("OpportunityTable", () => {
 
     await waitFor(() => expect(onRefreshRows).toHaveBeenCalledWith([33180, 33181]));
   });
+
+  it("clears selected rows with Escape", () => {
+    const { container } = render(
+      <OpportunityTable
+        rows={[row, secondRow]}
+        onRefreshRow={vi.fn()}
+        onRefreshRows={vi.fn()}
+        onEditNotes={vi.fn()}
+        onDisableProduct={vi.fn()}
+      />
+    );
+    const shell = container.querySelector(".table-shell") as HTMLElement;
+    const tableRows = container.querySelectorAll("tbody tr");
+
+    fireEvent.click(tableRows[0]);
+    expect(tableRows[0].className).toContain("is-selected");
+    fireEvent.keyDown(shell, { key: "Escape" });
+    expect(tableRows[0].className).not.toContain("is-selected");
+  });
 });

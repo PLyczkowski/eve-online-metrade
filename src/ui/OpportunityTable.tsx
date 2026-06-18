@@ -94,8 +94,28 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
       : [];
 
   return (
-    <section className="table-shell" onClick={() => setMenu(null)}>
-      <div className="table-scroll" ref={parentRef}>
+    <section
+      className="table-shell"
+      tabIndex={0}
+      onClick={() => setMenu(null)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          applySelectedTypeIds(new Set());
+          setLastSelectedTypeId(null);
+          setMenu(null);
+        }
+      }}
+    >
+      <div
+        className="table-scroll"
+        ref={parentRef}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) {
+            applySelectedTypeIds(new Set());
+            setLastSelectedTypeId(null);
+          }
+        }}
+      >
         <table style={{ width: table.getTotalSize() }}>
           <thead>
             {table.getHeaderGroups().map((group) => (
@@ -134,7 +154,10 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
                   key={row.id}
                   className={`${selectedTypeIds.has(original.typeId) ? "is-selected " : ""}status-${original.status.toLowerCase().replaceAll(" ", "-")}`}
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
-                  onClick={(event) => handleRowClick(event, original, tableRows.map((tableRow) => tableRow.original), selectedTypeIdsRef.current, applySelectedTypeIds, lastSelectedTypeId, setLastSelectedTypeId)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleRowClick(event, original, tableRows.map((tableRow) => tableRow.original), selectedTypeIdsRef.current, applySelectedTypeIds, lastSelectedTypeId, setLastSelectedTypeId);
+                  }}
                   onContextMenu={(event) => {
                     event.preventDefault();
                     if (!selectedTypeIdsRef.current.has(original.typeId)) {
