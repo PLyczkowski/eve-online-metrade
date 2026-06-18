@@ -159,6 +159,17 @@ export function App() {
     await startRefreshJob(`Queued update for ${typeId}`, () => api.startRefreshProduct(typeId), true);
   }
 
+  async function refreshRows(typeIds: number[]) {
+    const uniqueTypeIds = Array.from(new Set(typeIds));
+    for (const typeId of uniqueTypeIds) {
+      await api.startRefreshProduct(typeId);
+    }
+    const job = await api.getRefreshStatus();
+    setRefreshJob(job);
+    lastJobStatusRef.current = job.status;
+    setMessage(`Queued ${uniqueTypeIds.length} selected updates`);
+  }
+
   async function editNotes(typeId: number, current: string) {
     const notes = window.prompt("Notes", current);
     if (notes === null) return;
@@ -323,6 +334,7 @@ export function App() {
       <OpportunityTable
         rows={opportunities}
         onRefreshRow={refreshRow}
+        onRefreshRows={refreshRows}
         onEditNotes={editNotes}
         onDisableProduct={disableProduct}
       />

@@ -1,4 +1,4 @@
-import { CSSProperties, useMemo, useRef, useState } from "react";
+import { CSSProperties, Dispatch, MouseEvent, SetStateAction, useMemo, useRef, useState } from "react";
 import {
   ColumnDef,
   ColumnSizingState,
@@ -17,15 +17,25 @@ const columnSizingStorageKey = "eve-metrade-column-sizing-v1";
 interface Props {
   rows: Opportunity[];
   onRefreshRow: (typeId: number) => Promise<void>;
+  onRefreshRows: (typeIds: number[]) => Promise<void>;
   onEditNotes: (typeId: number, current: string) => Promise<void>;
   onDisableProduct: (typeId: number) => Promise<void>;
 }
 
-export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisableProduct }: Props) {
+export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNotes, onDisableProduct }: Props) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "estimatedProfit", desc: true }]);
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(() => readSavedColumnSizing());
   const [menu, setMenu] = useState<{ x: number; y: number; row: Opportunity } | null>(null);
+  const [selectedTypeIds, setSelectedTypeIds] = useState<Set<number>>(() => new Set());
+  const [lastSelectedTypeId, setLastSelectedTypeId] = useState<number | null>(null);
+  const selectedTypeIdsRef = useRef(selectedTypeIds);
   const parentRef = useRef<HTMLDivElement>(null);
+  selectedTypeIdsRef.current = selectedTypeIds;
+
+  function applySelectedTypeIds(next: Set<number>) {
+    selectedTypeIdsRef.current = next;
+    setSelectedTypeIds(next);
+  }
 
   const columns = useMemo<ColumnDef<Opportunity>[]>(() => [
     { accessorKey: "status", header: "Status", size: 130 },
@@ -77,6 +87,11 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
     ? measuredRows
     : tableRows.slice(0, 50).map((_, index) => ({ index, start: index * 34, size: 34, key: index }));
   const totalSize = virtualizer.getTotalSize();
+  const selectedForMenu = menu && selectedTypeIds.has(menu.row.typeId)
+    ? Array.from(selectedTypeIds)
+    : menu
+      ? [menu.row.typeId]
+      : [];
 
   return (
     <section className="table-shell" onClick={() => setMenu(null)}>
@@ -117,10 +132,15 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
               return (
                 <tr
                   key={row.id}
-                  className={`status-${original.status.toLowerCase().replaceAll(" ", "-")}`}
+                  className={`${selectedTypeIds.has(original.typeId) ? "is-selected " : ""}status-${original.status.toLowerCase().replaceAll(" ", "-")}`}
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
+                  onClick={(event) => handleRowClick(event, original, tableRows.map((tableRow) => tableRow.original), selectedTypeIdsRef.current, applySelectedTypeIds, lastSelectedTypeId, setLastSelectedTypeId)}
                   onContextMenu={(event) => {
                     event.preventDefault();
+                    if (!selectedTypeIdsRef.current.has(original.typeId)) {
+                      applySelectedTypeIds(new Set([original.typeId]));
+                      setLastSelectedTypeId(original.typeId);
+                    }
                     setMenu({ x: event.clientX, y: event.clientY, row: original });
                   }}
                 >
@@ -142,6 +162,7 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
       {menu ? (
         <div className="context-menu" style={{ left: menu.x, top: menu.y }} onClick={(event) => event.stopPropagation()}>
           <button onClick={() => onRefreshRow(menu.row.typeId).finally(() => setMenu(null))}>Update data</button>
+          <button onClick={() => onRefreshRows(selectedForMenu).finally(() => setMenu(null))}>Update Selected ({selectedForMenu.length})</button>
           <button onClick={() => onEditNotes(menu.row.typeId, menu.row.notes).finally(() => setMenu(null))}>Edit notes</button>
           <button onClick={() => onDisableProduct(menu.row.typeId).finally(() => setMenu(null))}>Disable product</button>
           <button onClick={() => window.open(`https://everef.net/type/${menu.row.typeId}`, "_blank")}>Open EVE item reference</button>
@@ -149,6 +170,36 @@ export function OpportunityTable({ rows, onRefreshRow, onEditNotes, onDisablePro
       ) : null}
     </section>
   );
+}
+
+function handleRowClick(
+  event: MouseEvent<HTMLTableRowElement>,
+  row: Opportunity,
+  visibleRows: Opportunity[],
+  selectedTypeIds: Set<number>,
+  setSelectedTypeIds: (next: Set<number>) => void,
+  lastSelectedTypeId: number | null,
+  setLastSelectedTypeId: Dispatch<SetStateAction<number | null>>
+) {
+  if (event.shiftKey && lastSelectedTypeId !== null) {
+    const start = visibleRows.findIndex((visible) => visible.typeId === lastSelectedTypeId);
+    const end = visibleRows.findIndex((visible) => visible.typeId === row.typeId);
+    if (start >= 0 && end >= 0) {
+      const [from, to] = start < end ? [start, end] : [end, start];
+      setSelectedTypeIds(new Set(visibleRows.slice(from, to + 1).map((visible) => visible.typeId)));
+      return;
+    }
+  }
+  if (event.ctrlKey || event.metaKey) {
+    const next = new Set(selectedTypeIds);
+    if (next.has(row.typeId)) next.delete(row.typeId);
+    else next.add(row.typeId);
+    setSelectedTypeIds(next);
+    setLastSelectedTypeId(row.typeId);
+    return;
+  }
+  setSelectedTypeIds(new Set([row.typeId]));
+  setLastSelectedTypeId(row.typeId);
 }
 
 function cellColor(columnId: string, row: Opportunity): CSSProperties {

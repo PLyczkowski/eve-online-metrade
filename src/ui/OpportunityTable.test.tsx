@@ -31,6 +31,18 @@ const row: Opportunity = {
   scriptNotes: ""
 };
 
+const secondRow: Opportunity = {
+  ...row,
+  typeId: 33181,
+  itemName: "Scan Pinpointing Array I"
+};
+
+const thirdRow: Opportunity = {
+  ...row,
+  typeId: 33182,
+  itemName: "Scan Acquisition Array I"
+};
+
 describe("OpportunityTable", () => {
   it("shows right-click update action for a row", async () => {
     const onRefreshRow = vi.fn().mockResolvedValue(undefined);
@@ -38,6 +50,7 @@ describe("OpportunityTable", () => {
       <OpportunityTable
         rows={[row]}
         onRefreshRow={onRefreshRow}
+        onRefreshRows={vi.fn()}
         onEditNotes={vi.fn()}
         onDisableProduct={vi.fn()}
       />
@@ -47,5 +60,26 @@ describe("OpportunityTable", () => {
     fireEvent.click(screen.getByText("Update data"));
 
     await waitFor(() => expect(onRefreshRow).toHaveBeenCalledWith(33180));
+  });
+
+  it("updates selected rows from the context menu", async () => {
+    const onRefreshRows = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(
+      <OpportunityTable
+        rows={[row, secondRow, thirdRow]}
+        onRefreshRow={vi.fn()}
+        onRefreshRows={onRefreshRows}
+        onEditNotes={vi.fn()}
+        onDisableProduct={vi.fn()}
+      />
+    );
+    const tableRows = container.querySelectorAll("tbody tr");
+
+    fireEvent.click(tableRows[0]);
+    fireEvent.click(tableRows[1], { ctrlKey: true });
+    fireEvent.contextMenu(tableRows[1]);
+    fireEvent.click(screen.getByText(/Update Selected/));
+
+    await waitFor(() => expect(onRefreshRows).toHaveBeenCalledWith([33180, 33181]));
   });
 });
