@@ -290,6 +290,7 @@ function idleJob(): RefreshJob {
     lastError: "",
     queuedCount: 0,
     startedAt: "",
+    lastProgressAt: "",
     finishedAt: ""
   };
 }
@@ -299,7 +300,8 @@ function startFallbackJob(store: StoreShape, kind: string, action: () => Promise
     ...idleJob(),
     status: "running",
     kind,
-    startedAt: new Date().toISOString()
+    startedAt: new Date().toISOString(),
+    lastProgressAt: new Date().toISOString()
   };
   writeStore(store);
   action()

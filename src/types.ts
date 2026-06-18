@@ -83,6 +83,7 @@ export interface RefreshJob {
   lastError: string;
   queuedCount: number;
   startedAt: string;
+  lastProgressAt: string;
   finishedAt: string;
 }
 

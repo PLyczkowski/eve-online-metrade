@@ -617,5 +617,14 @@ function refreshProgressText(job: RefreshJob | null): string {
   const total = job.totalCount || "?";
   const current = job.currentItem ? ` - ${job.currentItem}` : "";
   const queued = job.queuedCount ? `, ${job.queuedCount} queued` : "";
-  return `Refreshing ${job.kind}... ${job.scannedCount}/${total}, ${job.apiCalls} API calls${queued}${current}`;
+  const idle = secondsSince(job.lastProgressAt);
+  const idleText = idle === null ? "" : `, ${idle}s since progress`;
+  return `Refreshing ${job.kind}... ${job.scannedCount}/${total}, ${job.apiCalls} API calls${idleText}${queued}${current}`;
+}
+
+function secondsSince(value: string): number | null {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  if (Number.isNaN(parsed)) return null;
+  return Math.max(0, Math.round((Date.now() - parsed) / 1000));
 }

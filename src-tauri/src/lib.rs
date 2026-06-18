@@ -107,6 +107,7 @@ struct RefreshJob {
     last_error: String,
     queued_count: i64,
     started_at: String,
+    last_progress_at: String,
     finished_at: String,
 }
 
@@ -719,6 +720,7 @@ fn start_refresh_job(
             last_error: String::new(),
             queued_count: queued_refresh_count(&conn)?,
             started_at: Utc::now().to_rfc3339(),
+            last_progress_at: Utc::now().to_rfc3339(),
             finished_at: String::new(),
         },
     )?;
@@ -1544,7 +1546,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
           id integer primary key check(id = 1),
           status text not null, kind text not null, current_item text not null,
           scanned_count integer not null, total_count integer not null, api_calls integer not null,
-          last_error text not null, queued_count integer not null default 0, started_at text not null, finished_at text not null
+          last_error text not null, queued_count integer not null default 0, started_at text not null, last_progress_at text not null default '', finished_at text not null
         );
         create table if not exists refresh_queue(
           id integer primary key autoincrement,
@@ -1590,6 +1592,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     let _ = conn.execute(
         "alter table refresh_jobs add column queued_count integer not null default 0",
+        [],
+    );
+    let _ = conn.execute(
+        "alter table refresh_jobs add column last_progress_at text not null default ''",
         [],
     );
     let _ = conn.execute(
@@ -2650,7 +2656,7 @@ fn trade_hub_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TradeHub> {
 
 fn get_refresh_job(conn: &Connection) -> Result<RefreshJob, String> {
     conn.query_row(
-        "select status, kind, current_item, scanned_count, total_count, api_calls, last_error, queued_count, started_at, finished_at from refresh_jobs where id = 1",
+        "select status, kind, current_item, scanned_count, total_count, api_calls, last_error, queued_count, started_at, last_progress_at, finished_at from refresh_jobs where id = 1",
         [],
         |row| {
             Ok(RefreshJob {
@@ -2663,7 +2669,8 @@ fn get_refresh_job(conn: &Connection) -> Result<RefreshJob, String> {
                 last_error: row.get(6)?,
                 queued_count: row.get(7)?,
                 started_at: row.get(8)?,
-                finished_at: row.get(9)?,
+                last_progress_at: row.get(9)?,
+                finished_at: row.get(10)?,
             })
         },
     )
@@ -2681,6 +2688,7 @@ fn get_refresh_job(conn: &Connection) -> Result<RefreshJob, String> {
             last_error: String::new(),
             queued_count: queued_refresh_count(conn).unwrap_or(0),
             started_at: String::new(),
+            last_progress_at: String::new(),
             finished_at: String::new(),
         })
     })
@@ -2688,11 +2696,12 @@ fn get_refresh_job(conn: &Connection) -> Result<RefreshJob, String> {
 
 fn set_refresh_job(conn: &Connection, job: &RefreshJob) -> Result<(), String> {
     conn.execute(
-        "insert into refresh_jobs(id, status, kind, current_item, scanned_count, total_count, api_calls, last_error, queued_count, started_at, finished_at)
-         values (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "insert into refresh_jobs(id, status, kind, current_item, scanned_count, total_count, api_calls, last_error, queued_count, started_at, last_progress_at, finished_at)
+         values (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          on conflict(id) do update set status=excluded.status, kind=excluded.kind, current_item=excluded.current_item,
          scanned_count=excluded.scanned_count, total_count=excluded.total_count, api_calls=excluded.api_calls,
-         last_error=excluded.last_error, queued_count=excluded.queued_count, started_at=excluded.started_at, finished_at=excluded.finished_at",
+         last_error=excluded.last_error, queued_count=excluded.queued_count, started_at=excluded.started_at,
+         last_progress_at=excluded.last_progress_at, finished_at=excluded.finished_at",
         params![
             &job.status,
             &job.kind,
@@ -2703,6 +2712,7 @@ fn set_refresh_job(conn: &Connection, job: &RefreshJob) -> Result<(), String> {
             &job.last_error,
             job.queued_count,
             &job.started_at,
+            &job.last_progress_at,
             &job.finished_at
         ],
     ).map_err(to_string)?;
@@ -2728,6 +2738,7 @@ fn update_refresh_job_progress(
     if !last_error.is_empty() {
         job.last_error = last_error.to_string();
     }
+    job.last_progress_at = Utc::now().to_rfc3339();
     job.queued_count = queued_refresh_count(conn).unwrap_or(job.queued_count);
     set_refresh_job(conn, &job)
 }
@@ -2741,17 +2752,26 @@ fn recover_stale_refresh_job(conn: &Connection) -> Result<(), String> {
         .parse::<i64>()
         .unwrap_or(600)
         .max(60);
+    let heartbeat = if job.last_progress_at.trim().is_empty() {
+        job.started_at.as_str()
+    } else {
+        job.last_progress_at.as_str()
+    };
     let started = chrono::DateTime::parse_from_rfc3339(&job.started_at)
         .map_err(to_string)?
         .with_timezone(&Utc);
+    let last_progress = chrono::DateTime::parse_from_rfc3339(heartbeat)
+        .map_err(to_string)?
+        .with_timezone(&Utc);
     let age_seconds = (Utc::now() - started).num_seconds();
+    let idle_seconds = (Utc::now() - last_progress).num_seconds();
     let appears_complete = job.total_count > 0 && job.scanned_count >= job.total_count;
     let effective_timeout = if appears_complete {
         120.min(timeout_seconds)
     } else {
-        timeout_seconds
+        (timeout_seconds / 3).clamp(120, timeout_seconds)
     };
-    if age_seconds <= effective_timeout {
+    if idle_seconds <= effective_timeout {
         return Ok(());
     }
     let last_item = if job.current_item.is_empty() {
@@ -2762,8 +2782,16 @@ fn recover_stale_refresh_job(conn: &Connection) -> Result<(), String> {
     job.status = "failed".to_string();
     job.current_item = String::new();
     job.last_error = format!(
-        "Refresh marked failed after {} seconds without completion. Last item: {}.",
-        age_seconds, last_item
+        "Refresh marked failed after {} seconds without progress ({} seconds total). Last item: {}; scanned {}/{}; API calls {}; last ESI {} {}; last URL: {}.",
+        idle_seconds,
+        age_seconds,
+        last_item,
+        job.scanned_count,
+        job.total_count,
+        job.api_calls,
+        api_state(conn, "last_status", "unknown"),
+        api_state(conn, "last_response_at", "unknown"),
+        api_state(conn, "last_url", "")
     );
     job.finished_at = Utc::now().to_rfc3339();
     set_refresh_job(conn, &job)
@@ -2836,6 +2864,7 @@ fn run_queued_refresh_jobs(conn: &Connection) -> Result<(), String> {
         job.api_calls = 0;
         job.queued_count = queued_refresh_count(conn)?;
         job.started_at = Utc::now().to_rfc3339();
+        job.last_progress_at = job.started_at.clone();
         job.finished_at = String::new();
         set_refresh_job(conn, &job)?;
 
