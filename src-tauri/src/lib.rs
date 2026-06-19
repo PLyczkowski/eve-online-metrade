@@ -3075,7 +3075,7 @@ fn refresh_order_market_checks(
         let is_undercut = lowest
             .map(|price| price < own_price - 0.001)
             .unwrap_or(false);
-        let suggested = lowest.map(|price| (price - 0.01).max(0.01));
+        let suggested = lowest.map(previous_market_tick);
         conn.execute(
             "insert into order_market_checks(order_id, lowest_competing_price, is_undercut, suggested_update_price, checked_at)
              values (?1, ?2, ?3, ?4, ?5)
@@ -3085,6 +3085,26 @@ fn refresh_order_market_checks(
         .map_err(to_string)?;
     }
     Ok(())
+}
+
+fn market_tick_size(price: f64) -> f64 {
+    if !price.is_finite() || price <= 0.0 {
+        return 0.01;
+    }
+    10_f64.powi(price.log10().floor() as i32 - 3).max(0.01)
+}
+
+fn round_down_market_tick(price: f64) -> f64 {
+    if !price.is_finite() || price <= 0.01 {
+        return 0.01;
+    }
+    let tick = market_tick_size(price);
+    let rounded = (price / tick).floor() * tick;
+    ((rounded.max(0.01) * 100.0).round()) / 100.0
+}
+
+fn previous_market_tick(price: f64) -> f64 {
+    round_down_market_tick(price - 0.01)
 }
 
 fn list_our_orders_inner(
@@ -4032,4 +4052,33 @@ fn refresh_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RefreshRun>
         skipped: row.get(5)?,
         duration_seconds: row.get(6)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{market_tick_size, previous_market_tick, round_down_market_tick};
+
+    #[test]
+    fn market_tick_size_uses_four_significant_digits() {
+        assert_eq!(market_tick_size(1_000_000.0), 1000.0);
+        assert_eq!(market_tick_size(999_999.99), 100.0);
+        assert_eq!(market_tick_size(9_999.99), 1.0);
+        assert_eq!(market_tick_size(9.99), 0.01);
+    }
+
+    #[test]
+    fn round_down_market_tick_matches_eve_examples() {
+        assert_eq!(round_down_market_tick(1_112_345.67), 1_112_000.0);
+        assert_eq!(round_down_market_tick(1_001_999.99), 1_001_000.0);
+        assert_eq!(round_down_market_tick(999_999.99), 999_900.0);
+        assert_eq!(round_down_market_tick(33.019), 33.01);
+    }
+
+    #[test]
+    fn previous_market_tick_is_valid_price_below_competitor() {
+        assert_eq!(previous_market_tick(1_000_000.0), 999_900.0);
+        assert_eq!(previous_market_tick(1_112_000.0), 1_111_000.0);
+        assert_eq!(previous_market_tick(999_900.0), 999_800.0);
+        assert_eq!(previous_market_tick(33.01), 33.0);
+    }
 }
