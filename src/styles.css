@@ -298,9 +298,10 @@ select,
 }
 
 .account-table {
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  min-width: 1380px;
   border-collapse: collapse;
+  table-layout: auto;
   font-size: 13px;
 }
 
@@ -312,6 +313,8 @@ select,
   border-right: 1px solid #edf1f5;
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .account-table th {
@@ -334,6 +337,22 @@ select,
   color: #697481;
   text-align: center;
   background: #f8fafc;
+}
+
+.account-table thead {
+  display: table-header-group;
+}
+
+.account-table tbody {
+  display: table-row-group;
+  position: static;
+}
+
+.account-table tr {
+  display: table-row;
+  position: static;
+  height: auto;
+  transform: none !important;
 }
 
 .account-table tr.is-undercut td {
@@ -365,18 +384,18 @@ select,
   background: #fff;
 }
 
-table {
+.table-scroll table {
   border-collapse: collapse;
   table-layout: fixed;
 }
 
-thead {
+.table-scroll thead {
   position: sticky;
   top: 0;
   z-index: 2;
 }
 
-th {
+.table-scroll th {
   position: relative;
   height: 36px;
   text-align: left;
@@ -452,24 +471,24 @@ th {
   box-shadow: 0 0 0 1px rgba(43, 108, 176, 0.16);
 }
 
-tbody {
+.table-scroll tbody {
   position: relative;
   display: block;
 }
 
-thead,
-tbody tr {
+.table-scroll thead,
+.table-scroll tbody tr {
   display: table;
   width: 100%;
   table-layout: fixed;
 }
 
-tbody tr {
+.table-scroll tbody tr {
   position: absolute;
   height: 34px;
 }
 
-td {
+.table-scroll td {
   height: 34px;
   padding: 0 8px;
   border-right: 1px solid #edf0f3;
@@ -479,11 +498,11 @@ td {
   text-overflow: ellipsis;
 }
 
-tbody tr:hover td {
+.table-scroll tbody tr:hover td {
   box-shadow: inset 0 0 0 9999px rgba(219, 234, 254, 0.48);
 }
 
-tbody tr.is-selected td {
+.table-scroll tbody tr.is-selected td {
   box-shadow: inset 0 0 0 9999px rgba(37, 99, 235, 0.18), inset 0 0 0 1px rgba(37, 99, 235, 0.58);
 }
 
