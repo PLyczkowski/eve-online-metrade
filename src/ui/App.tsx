@@ -548,6 +548,7 @@ function AccountToolbar({
 }
 
 function OrdersTable({ rows, onEditCost }: { rows: OurOrder[]; onEditCost: (order: OurOrder) => Promise<void> }) {
+  const maxProfitRemain = Math.max(...rows.map((row) => row.expectedProfitRemaining ?? 0), 0);
   const columns = useMemo<ColumnDef<OurOrder>[]>(() => [
     { accessorKey: "characterName", header: "Character", size: 130 },
     { accessorKey: "itemName", header: "Item", size: 230, cell: ({ row }) => <>{row.original.itemName}<small>{row.original.typeId}</small></> },
@@ -561,8 +562,8 @@ function OrdersTable({ rows, onEditCost }: { rows: OurOrder[]; onEditCost: (orde
     { id: "boughtUnitPrice", header: "Bought / Unit", size: 125, cell: ({ row }) => <button className="link-button" onClick={() => onEditCost(row.original)}>{row.original.boughtUnitPrice === null ? "Set" : `${formatIsk(row.original.boughtUnitPrice)}${row.original.manualCost ? " *" : ""}`}</button> },
     { accessorKey: "boughtQuantityMatched", header: "Matched Qty", size: 115 },
     { accessorKey: "expectedProfitPerUnit", header: "Profit / Unit", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
-    { accessorKey: "expiresAt", header: "Expires", size: 115, cell: ({ getValue }) => shortDate(getValue<string | null>()) },
-    { accessorKey: "refreshedAt", header: "Last Refresh", size: 125, cell: ({ getValue }) => shortDate(getValue<string | null>()) }
+    { accessorKey: "expiresAt", header: "Expires", size: 125, cell: ({ getValue }) => formatTimeLeft(getValue<string | null>()) },
+    { accessorKey: "refreshedAt", header: "Last Refresh", size: 125, cell: ({ getValue }) => minutesAgoLabel(getValue<string | null>()) }
   ], [onEditCost]);
   return (
     <AccountDataTable
@@ -570,7 +571,14 @@ function OrdersTable({ rows, onEditCost }: { rows: OurOrder[]; onEditCost: (orde
       rows={rows}
       columns={columns}
       emptyMessage="No active sell orders loaded. Use Refresh account data, or re-login if wallet/order scope changed."
-      getCellStyle={(columnId, row) => columnId === "price" && row.isUndercut ? { backgroundColor: "#fde2e2", fontWeight: 650 } : {}}
+      getCellStyle={(columnId, row) => {
+        if (columnId === "price" && row.isUndercut) return { backgroundColor: "#fde2e2", fontWeight: 650 };
+        if (columnId === "stationName") return stationCellColor(row.stationName);
+        if (columnId === "expectedProfitRemaining") return { backgroundColor: greenScale(row.expectedProfitRemaining ?? 0, 0, maxProfitRemain) };
+        if (columnId === "quantity") return quantityFill(row.volumeRemain, row.volumeTotal);
+        if (columnId === "refreshedAt") return { backgroundColor: refreshScale(minutesAgo(row.refreshedAt)) };
+        return {};
+      }}
     />
   );
 }
@@ -643,8 +651,6 @@ function AccountDataTable<T>({
                   key={header.id}
                   className={dropColumn === header.column.id ? "column-drop-target" : ""}
                   style={{ width: header.getSize() }}
-                  draggable
-                  onDragStart={(event) => handleHeaderDragStart(event, header.column.id, setDraggedColumn)}
                   onDragOver={(event) => {
                     event.preventDefault();
                     setDropColumn(header.column.id);
@@ -665,7 +671,12 @@ function AccountDataTable<T>({
                     setHeaderMenu({ x: event.clientX, y: event.clientY });
                   }}
                 >
-                  <button className="column-header-button" onClick={header.column.getToggleSortingHandler()}>
+                  <button
+                    className="column-header-button"
+                    draggable
+                    onDragStart={(event) => handleHeaderDragStart(event, header.column.id, setDraggedColumn)}
+                    onClick={header.column.getToggleSortingHandler()}
+                  >
                     {flexRender(header.column.columnDef.header, header.getContext())}
                     <span>{header.column.getIsSorted() === "asc" ? " ▲" : header.column.getIsSorted() === "desc" ? " ▼" : ""}</span>
                   </button>
@@ -676,8 +687,14 @@ function AccountDataTable<T>({
                         ? `translateX(${table.getState().columnSizingInfo.deltaOffset ?? 0}px)`
                         : undefined
                     }}
-                    onMouseDown={header.getResizeHandler()}
-                    onTouchStart={header.getResizeHandler()}
+                    onMouseDown={(event) => {
+                      event.stopPropagation();
+                      header.getResizeHandler()(event);
+                    }}
+                    onTouchStart={(event) => {
+                      event.stopPropagation();
+                      header.getResizeHandler()(event);
+                    }}
                   />
                 </th>
               ))}
@@ -1010,6 +1027,71 @@ function shortDate(value: string | null): string {
   }).format(parsed);
 }
 
+function minutesAgo(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  if (Number.isNaN(parsed)) return null;
+  return Math.max(0, Math.round((Date.now() - parsed) / 60000));
+}
+
+function minutesAgoLabel(value: string | null): string {
+  const minutes = minutesAgo(value);
+  return minutes === null ? "" : `${minutes} min ago`;
+}
+
+function formatTimeLeft(value: string | null): string {
+  if (!value) return "";
+  const parsed = new Date(value).getTime();
+  if (Number.isNaN(parsed)) return "";
+  let minutes = Math.max(0, Math.round((parsed - Date.now()) / 60000));
+  const days = Math.floor(minutes / 1440);
+  minutes -= days * 1440;
+  const hours = Math.floor(minutes / 60);
+  minutes -= hours * 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function stationCellColor(station: string): CSSProperties {
+  if (station === "Jita") return { backgroundColor: "#ffedd5" };
+  if (station === "Amarr") return { backgroundColor: "#dbeafe" };
+  return {};
+}
+
+function quantityFill(remaining: number, total: number): CSSProperties {
+  if (!total || total <= 0) return {};
+  const percent = Math.max(0, Math.min(100, (remaining / total) * 100));
+  return {
+    background: `linear-gradient(90deg, #dcfce7 0%, #dcfce7 ${percent}%, #ffffff ${percent}%, #ffffff 100%)`
+  };
+}
+
+function greenScale(value: number, low: number, high: number): string {
+  if (!value || value < low || high <= low) return "#ffffff";
+  const ratio = Math.min(1, Math.max(0, (value - low) / (high - low)));
+  const green = Math.round(245 - ratio * 100);
+  const redBlue = Math.round(255 - ratio * 170);
+  return `rgb(${redBlue}, ${green}, ${redBlue})`;
+}
+
+function refreshScale(minutes: number | null): string {
+  if (minutes === null) return "#ffffff";
+  if (minutes <= 5) return "#ccf0cc";
+  if (minutes >= 30) return "#f4cccc";
+  if (minutes <= 17.5) {
+    const ratio = (minutes - 5) / 12.5;
+    return mixColor([204, 240, 204], [255, 242, 165], ratio);
+  }
+  const ratio = (minutes - 17.5) / 12.5;
+  return mixColor([255, 242, 165], [244, 204, 204], ratio);
+}
+
+function mixColor(from: [number, number, number], to: [number, number, number], ratio: number): string {
+  const values = from.map((value, index) => Math.round(value + (to[index] - value) * ratio));
+  return `rgb(${values[0]}, ${values[1]}, ${values[2]})`;
+}
+
 function readSavedTableState<T>(key: string, fallback: T): T {
   try {
     const saved = localStorage.getItem(key);
@@ -1027,7 +1109,7 @@ function persistTableState<T>(key: string, updater: T | ((current: T) => T), set
   });
 }
 
-function handleHeaderDragStart(event: DragEvent<HTMLTableCellElement>, columnId: string, setDraggedColumn: Dispatch<SetStateAction<string | null>>) {
+function handleHeaderDragStart(event: DragEvent<HTMLElement>, columnId: string, setDraggedColumn: Dispatch<SetStateAction<string | null>>) {
   setDraggedColumn(columnId);
   event.dataTransfer.effectAllowed = "move";
 }

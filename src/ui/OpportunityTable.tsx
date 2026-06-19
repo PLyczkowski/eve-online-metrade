@@ -154,11 +154,6 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
                     key={header.id}
                     className={dropColumn === header.column.id ? "column-drop-target" : ""}
                     style={{ width: header.getSize() }}
-                    draggable
-                    onDragStart={(event) => {
-                      setDraggedColumn(header.column.id);
-                      event.dataTransfer.effectAllowed = "move";
-                    }}
                     onDragOver={(event) => {
                       event.preventDefault();
                       setDropColumn(header.column.id);
@@ -179,7 +174,16 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
                       setHeaderMenu({ x: event.clientX, y: event.clientY });
                     }}
                   >
-                    <button className="column-header-button" onClick={header.column.getToggleSortingHandler()} title="Click to sort">
+                    <button
+                      className="column-header-button"
+                      draggable
+                      onDragStart={(event) => {
+                        setDraggedColumn(header.column.id);
+                        event.dataTransfer.effectAllowed = "move";
+                      }}
+                      onClick={header.column.getToggleSortingHandler()}
+                      title="Click to sort"
+                    >
                       {flexRender(header.column.columnDef.header, header.getContext())}
                       <span>{header.column.getIsSorted() === "asc" ? " ▲" : header.column.getIsSorted() === "desc" ? " ▼" : ""}</span>
                     </button>
@@ -190,8 +194,14 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
                           ? `translateX(${table.getState().columnSizingInfo.deltaOffset ?? 0}px)`
                           : undefined
                       }}
-                      onMouseDown={header.getResizeHandler()}
-                      onTouchStart={header.getResizeHandler()}
+                      onMouseDown={(event) => {
+                        event.stopPropagation();
+                        header.getResizeHandler()(event);
+                      }}
+                      onTouchStart={(event) => {
+                        event.stopPropagation();
+                        header.getResizeHandler()(event);
+                      }}
                       title="Drag to resize column"
                     />
                   </th>
