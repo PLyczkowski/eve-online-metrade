@@ -29,7 +29,7 @@ select {
   height: 100vh;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto auto auto 1fr auto;
+  grid-template-rows: auto auto auto auto auto 1fr auto;
   overflow: hidden;
 }
 
@@ -124,6 +124,41 @@ select {
   padding: 10px 14px;
   background: #f8fafc;
   border-bottom: 1px solid #d8dee6;
+}
+
+.tabbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: #17212b;
+  border-bottom: 1px solid #2a3847;
+}
+
+.tabbar button {
+  min-height: 32px;
+  border: 1px solid #405264;
+  border-radius: 6px;
+  background: #233140;
+  color: #e8edf3;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.tabbar button.active {
+  background: #d6a43a;
+  color: #101820;
+  border-color: #d6a43a;
+  font-weight: 700;
+}
+
+.tabbar .sale-badge {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #9b2c2c;
+  border-color: #c53030;
 }
 
 .api-burn-band {
@@ -254,6 +289,67 @@ select,
 .table-shell {
   min-height: 0;
   position: relative;
+}
+
+.account-table-shell {
+  min-height: 0;
+  overflow: auto;
+  background: #fff;
+}
+
+.account-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.account-table th,
+.account-table td {
+  height: 34px;
+  padding: 6px 9px;
+  border-bottom: 1px solid #e3e8ee;
+  border-right: 1px solid #edf1f5;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.account-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f3f6f9;
+  color: #40505f;
+  font-size: 12px;
+}
+
+.account-table small {
+  display: block;
+  color: #718091;
+  font-size: 11px;
+}
+
+.account-table tr.is-undercut td {
+  background: #fde2e2;
+}
+
+.account-table tr.is-sell td:first-child,
+.account-table tr.is-sell td:nth-child(2) {
+  background: #dcfce7;
+}
+
+.account-table tr.is-buy td:first-child,
+.account-table tr.is-buy td:nth-child(2) {
+  background: #dbeafe;
+}
+
+.link-button {
+  border: 0;
+  background: transparent;
+  color: #1f5f9f;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 .table-scroll {

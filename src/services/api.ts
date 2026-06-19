@@ -1,4 +1,4 @@
-import type { ApiLimitStatus, AuthCharacter, AuthEvent, CharacterOrder, DiscoveryRun, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting, TradeHub } from "../types";
+import type { AccountFilters, AccountRefreshResult, ApiLimitStatus, AuthCharacter, AuthEvent, CharacterOrder, DiscoveryRun, DiscoverySummary, Filters, Opportunity, OurOrder, Product, RefreshJob, RefreshRun, SaleNotification, Setting, TradeHub, WalletTransaction } from "../types";
 import { seedOpportunities, seedProducts, seedRefreshRuns, seedSettings } from "../data/seed";
 import { analyzeOpportunity, defaultMarketConfig, shouldSkipLowTargetVolume } from "../domain/market";
 
@@ -15,6 +15,12 @@ type Command =
   | "start_eve_login"
   | "refresh_character_orders"
   | "list_character_orders"
+  | "refresh_account_data"
+  | "list_our_orders"
+  | "list_transactions"
+  | "list_sale_notifications"
+  | "update_order_cost_basis"
+  | "mark_sale_notifications_seen"
   | "get_refresh_status"
   | "discover_hot_products"
   | "start_refresh_next_batch"
@@ -38,6 +44,8 @@ interface StoreShape {
   authCharacters: AuthCharacter[];
   authEvents: AuthEvent[];
   characterOrders: CharacterOrder[];
+  walletTransactions: WalletTransaction[];
+  saleNotifications: SaleNotification[];
   cursor: number;
 }
 
@@ -91,6 +99,24 @@ export const api = {
   },
   listCharacterOrders(characterId?: number) {
     return call<CharacterOrder[]>("list_character_orders", { characterId });
+  },
+  refreshAccountData(characterId: number) {
+    return call<AccountRefreshResult>("refresh_account_data", { characterId });
+  },
+  listOurOrders(filters: AccountFilters) {
+    return call<OurOrder[]>("list_our_orders", { filters });
+  },
+  listTransactions(filters: AccountFilters) {
+    return call<WalletTransaction[]>("list_transactions", { filters });
+  },
+  listSaleNotifications() {
+    return call<SaleNotification[]>("list_sale_notifications");
+  },
+  updateOrderCostBasis(orderId: number, unitCost: number, quantity: number) {
+    return call<void>("update_order_cost_basis", { orderId, unitCost, quantity });
+  },
+  markSaleNotificationsSeen(ids: number[]) {
+    return call<void>("mark_sale_notifications_seen", { ids });
   },
   getRefreshStatus() {
     return call<RefreshJob>("get_refresh_status");
@@ -146,7 +172,17 @@ async function fallbackCommand<T>(command: Command, args?: Record<string, unknow
     const rows = store.characterOrders ?? [];
     return (characterId ? rows.filter((row) => row.characterId === characterId) : rows) as T;
   }
-  if (command === "start_eve_login" || command === "refresh_character_orders") {
+  if (command === "list_transactions") return filterFallbackTransactions(store.walletTransactions ?? [], args?.filters as AccountFilters) as T;
+  if (command === "list_our_orders") return [] as T;
+  if (command === "list_sale_notifications") return (store.saleNotifications ?? []) as T;
+  if (command === "mark_sale_notifications_seen") {
+    const ids = new Set((args?.ids as number[]) ?? []);
+    store.saleNotifications = (store.saleNotifications ?? []).map((row) => ids.has(row.id) ? { ...row, seen: true } : row);
+    writeStore(store);
+    return undefined as T;
+  }
+  if (command === "update_order_cost_basis") return undefined as T;
+  if (command === "start_eve_login" || command === "refresh_character_orders" || command === "refresh_account_data") {
     throw new Error("EVE login requires the desktop app.");
   }
   if (command === "get_refresh_status") return store.refreshJob as T;
@@ -173,6 +209,8 @@ function readStore(): StoreShape {
     if (!store.authCharacters) store.authCharacters = [];
     if (!store.authEvents) store.authEvents = [];
     if (!store.characterOrders) store.characterOrders = [];
+    if (!store.walletTransactions) store.walletTransactions = [];
+    if (!store.saleNotifications) store.saleNotifications = [];
     return store;
   }
   const store: StoreShape = {
@@ -185,6 +223,8 @@ function readStore(): StoreShape {
     authCharacters: [],
     authEvents: [],
     characterOrders: [],
+    walletTransactions: [],
+    saleNotifications: [],
     cursor: 0
   };
   writeStore(store);
@@ -278,6 +318,15 @@ function fallbackApiLimitStatus(): ApiLimitStatus {
     rateLimited: false,
     lastUrl: ""
   };
+}
+
+function filterFallbackTransactions(rows: WalletTransaction[], filters: AccountFilters): WalletTransaction[] {
+  const search = filters.search.trim().toLowerCase();
+  return rows
+    .filter((row) => filters.characterId === null || row.characterId === filters.characterId)
+    .filter((row) => !filters.station || row.stationName === filters.station)
+    .filter((row) => filters.side === "BUY" ? row.isBuy : filters.side === "SELL" ? !row.isBuy : true)
+    .filter((row) => !search || `${row.typeId} ${row.itemName} ${row.stationName}`.toLowerCase().includes(search));
 }
 
 function idleJob(): RefreshJob {

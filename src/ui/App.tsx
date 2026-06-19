@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, DatabaseZap, LogIn, Play, RefreshCw, RotateCcw, Search, Settings, Square, X } from "lucide-react";
+import { Dispatch, SetStateAction, useEffect, useMemo, useRef, useState } from "react";
+import { Bell, CheckCircle2, DatabaseZap, LogIn, Play, RefreshCw, RotateCcw, Search, Settings, Square, X } from "lucide-react";
 import { OpportunityTable } from "./OpportunityTable";
 import { api } from "../services/api";
 import { formatIsk } from "../domain/format";
-import type { ApiLimitStatus, AuthCharacter, AuthEvent, CharacterOrder, DiscoverySummary, Filters, Opportunity, Product, RefreshJob, RefreshRun, Setting, TradeHub } from "../types";
+import type { AccountFilters, ApiLimitStatus, AuthCharacter, AuthEvent, CharacterOrder, DiscoverySummary, Filters, Opportunity, OurOrder, Product, RefreshJob, RefreshRun, SaleNotification, Setting, TradeHub, WalletTransaction } from "../types";
 
 const emptyFilters: Filters = { search: "", status: "ALL", direction: "ALL" };
+const emptyAccountFilters: AccountFilters = { search: "", characterId: null, station: "", undercutOnly: false, unknownCostOnly: false, side: "ALL" };
 const filterStorageKey = "eve-metrade-filters-v1";
 const toolbarSettingKeys = new Set([
   "Automatic refresh enabled",
@@ -14,7 +15,11 @@ const toolbarSettingKeys = new Set([
 ]);
 
 export function App() {
+  const [activeTab, setActiveTab] = useState<"opportunities" | "orders" | "transactions">("opportunities");
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
+  const [ourOrders, setOurOrders] = useState<OurOrder[]>([]);
+  const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
+  const [saleNotifications, setSaleNotifications] = useState<SaleNotification[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [tradeHubs, setTradeHubs] = useState<TradeHub[]>([]);
   const [settings, setSettings] = useState<Setting[]>([]);
@@ -26,6 +31,7 @@ export function App() {
   const [authEvents, setAuthEvents] = useState<AuthEvent[]>([]);
   const [characterOrders, setCharacterOrders] = useState<CharacterOrder[]>([]);
   const [filters, setFilters] = useState<Filters>(() => readSavedFilters());
+  const [accountFilters, setAccountFilters] = useState<AccountFilters>(emptyAccountFilters);
   const [intervalDraft, setIntervalDraft] = useState("600");
   const [maxItemsDraft, setMaxItemsDraft] = useState("5");
   const [busy, setBusy] = useState(false);
@@ -35,10 +41,14 @@ export function App() {
   const intervalEditingRef = useRef(false);
   const maxItemsEditingRef = useRef(false);
   const lastJobStatusRef = useRef<string | null>(null);
+  const notifiedSaleIdsRef = useRef<Set<number>>(new Set());
 
   async function load() {
-    const [opportunityRows, productRows, hubRows, settingRows, runRows, discoverySummary, apiLimitStatus, authRows, authEventRows, orderRows, jobStatus] = await Promise.all([
+    const [opportunityRows, accountOrderRows, transactionRows, notificationRows, productRows, hubRows, settingRows, runRows, discoverySummary, apiLimitStatus, authRows, authEventRows, orderRows, jobStatus] = await Promise.all([
       api.listOpportunities(filters),
+      api.listOurOrders(accountFilters),
+      api.listTransactions(accountFilters),
+      api.listSaleNotifications(),
       api.listProducts(),
       api.listTradeHubs(),
       api.listSettings(),
@@ -51,6 +61,9 @@ export function App() {
       api.getRefreshStatus()
     ]);
     setOpportunities(opportunityRows);
+    setOurOrders(accountOrderRows);
+    setTransactions(transactionRows);
+    setSaleNotifications(notificationRows);
     setProducts(productRows);
     setTradeHubs(hubRows);
     setSettings(settingRows);
@@ -71,7 +84,7 @@ export function App() {
 
   useEffect(() => {
     load().catch((error) => setMessage((error as Error).message));
-  }, [filters.status, filters.direction, filters.search]);
+  }, [filters.status, filters.direction, filters.search, accountFilters.search, accountFilters.characterId, accountFilters.station, accountFilters.undercutOnly, accountFilters.unknownCostOnly, accountFilters.side]);
 
   useEffect(() => {
     localStorage.setItem(filterStorageKey, JSON.stringify(filters));
@@ -87,7 +100,9 @@ export function App() {
   const enabledHubCount = tradeHubs.filter((hub) => hub.enabled).length;
   const automaticEnabled = settingValue(settings, "Automatic refresh enabled") !== "FALSE";
   const automaticIntervalSeconds = Math.max(60, Number(settingValue(settings, "Automatic refresh interval seconds")) || 600);
+  const accountIntervalSeconds = Math.max(60, Number(settingValue(settings, "Account refresh interval seconds")) || 300);
   const refreshRunning = refreshJob?.status === "running";
+  const unseenSales = saleNotifications.filter((row) => !row.seen);
   const apiBurn = useMemo(
     () => estimateApiBurn(runs, automaticIntervalSeconds, Number(settingValue(settings, "Estimated safe ESI calls per hour")) || 1200, apiLimit),
     [runs, automaticIntervalSeconds, settings, apiLimit]
@@ -101,6 +116,15 @@ export function App() {
     }, automaticIntervalSeconds * 1000);
     return () => window.clearInterval(timer);
   }, [automaticEnabled, automaticIntervalSeconds, refreshRunning]);
+
+  useEffect(() => {
+    if (!authCharacters.length) return;
+    const timer = window.setInterval(() => {
+      if (busyRef.current) return;
+      refreshAccountData().catch((error) => setMessage((error as Error).message));
+    }, accountIntervalSeconds * 1000);
+    return () => window.clearInterval(timer);
+  }, [authCharacters, accountIntervalSeconds]);
 
   useEffect(() => {
     const timer = window.setInterval(async () => {
@@ -125,6 +149,20 @@ export function App() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [filters.status, filters.direction, filters.search]);
+
+  useEffect(() => {
+    for (const sale of unseenSales) {
+      if (notifiedSaleIdsRef.current.has(sale.id)) continue;
+      notifiedSaleIdsRef.current.add(sale.id);
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("EVE Metrade sale", {
+          body: `${sale.quantity} x ${sale.itemName} @ ${formatIsk(sale.unitPrice)}`
+        });
+      } else if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission().catch(() => undefined);
+      }
+    }
+  }, [unseenSales]);
 
   async function runAction(label: string, action: () => Promise<unknown>) {
     if (busyRef.current) return;
@@ -212,6 +250,31 @@ export function App() {
     await runAction("Refreshed character orders", () => api.refreshCharacterOrders(characterId));
   }
 
+  async function refreshAccountData(characterId?: number) {
+    const ids = characterId ? [characterId] : authCharacters.map((character) => character.characterId);
+    if (!ids.length) {
+      setMessage("Log in with EVE first.");
+      return;
+    }
+    await runAction("Refreshed account data", async () => {
+      for (const id of ids) {
+        await api.refreshAccountData(id);
+      }
+    });
+  }
+
+  async function editOrderCost(order: OurOrder) {
+    const unit = window.prompt("Bought for / unit", order.boughtUnitPrice?.toString() ?? "");
+    if (unit === null) return;
+    const quantity = window.prompt("Bought quantity matched", (order.boughtQuantityMatched ?? order.volumeTotal).toString());
+    if (quantity === null) return;
+    await runAction("Saved order cost", () => api.updateOrderCostBasis(order.orderId, Number(unit), Math.round(Number(quantity))));
+  }
+
+  async function markSalesSeen() {
+    await runAction("Cleared sale notifications", () => api.markSaleNotificationsSeen(unseenSales.map((sale) => sale.id)));
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -234,6 +297,17 @@ export function App() {
           </button>
         </div>
       </header>
+
+      <nav className="tabbar" aria-label="Main sections">
+        <button className={activeTab === "opportunities" ? "active" : ""} onClick={() => setActiveTab("opportunities")}>Opportunities</button>
+        <button className={activeTab === "orders" ? "active" : ""} onClick={() => setActiveTab("orders")}>Our Orders</button>
+        <button className={activeTab === "transactions" ? "active" : ""} onClick={() => setActiveTab("transactions")}>Transactions</button>
+        {unseenSales.length ? (
+          <button className="sale-badge" onClick={markSalesSeen} title="Mark sale notifications seen">
+            <Bell size={15} /> {unseenSales.length} new sale{unseenSales.length === 1 ? "" : "s"}
+          </button>
+        ) : null}
+      </nav>
 
       <section className="summary-band">
         <SummaryCard label="Rows" value={opportunities.length.toString()} />
@@ -259,7 +333,7 @@ export function App() {
         <span className={`api-burn-label ${apiBurn.level}`}>{apiBurn.label}</span>
       </section>
 
-      <section className="toolbar" aria-label="Table controls">
+      {activeTab === "opportunities" ? <section className="toolbar" aria-label="Table controls">
         <label className="search-box">
           <Search size={16} />
           <input
@@ -329,15 +403,32 @@ export function App() {
         <button className="icon-button" onClick={load} title="Reload table" disabled={busy}>
           <RefreshCw size={17} />
         </button>
-      </section>
+      </section> : (
+        <AccountToolbar
+          filters={accountFilters}
+          characters={authCharacters}
+          rows={ourOrders}
+          transactions={transactions}
+          activeTab={activeTab}
+          onFiltersChange={setAccountFilters}
+          onRefreshAccount={() => refreshAccountData()}
+          busy={busy}
+        />
+      )}
 
-      <OpportunityTable
-        rows={opportunities}
-        onRefreshRow={refreshRow}
-        onRefreshRows={refreshRows}
-        onEditNotes={editNotes}
-        onDisableProduct={disableProduct}
-      />
+      {activeTab === "opportunities" ? (
+        <OpportunityTable
+          rows={opportunities}
+          onRefreshRow={refreshRow}
+          onRefreshRows={refreshRows}
+          onEditNotes={editNotes}
+          onDisableProduct={disableProduct}
+        />
+      ) : activeTab === "orders" ? (
+        <OrdersTable rows={ourOrders} onEditCost={editOrderCost} />
+      ) : (
+        <TransactionsTable rows={transactions} />
+      )}
 
       <footer className="status-bar">
         <span>{refreshRunning ? refreshProgressText(refreshJob) : busy ? "Working" : message}</span>
@@ -359,6 +450,159 @@ export function App() {
         />
       ) : null}
     </main>
+  );
+}
+
+function AccountToolbar({
+  filters,
+  characters,
+  rows,
+  transactions,
+  activeTab,
+  onFiltersChange,
+  onRefreshAccount,
+  busy
+}: {
+  filters: AccountFilters;
+  characters: AuthCharacter[];
+  rows: OurOrder[];
+  transactions: WalletTransaction[];
+  activeTab: "orders" | "transactions";
+  onFiltersChange: Dispatch<SetStateAction<AccountFilters>>;
+  onRefreshAccount: () => Promise<void>;
+  busy: boolean;
+}) {
+  const stations = Array.from(new Set([...rows.map((row) => row.stationName), ...transactions.map((row) => row.stationName)].filter(Boolean))).sort();
+  return (
+    <section className="toolbar" aria-label="Account controls">
+      <label className="search-box">
+        <Search size={16} />
+        <input
+          value={filters.search}
+          onChange={(event) => onFiltersChange((current) => ({ ...current, search: event.target.value }))}
+          placeholder="Search item, type ID, station"
+        />
+      </label>
+      <select
+        value={filters.characterId ?? ""}
+        onChange={(event) => onFiltersChange((current) => ({ ...current, characterId: event.target.value ? Number(event.target.value) : null }))}
+      >
+        <option value="">All characters</option>
+        {characters.map((character) => <option key={character.characterId} value={character.characterId}>{character.characterName}</option>)}
+      </select>
+      <select value={filters.station} onChange={(event) => onFiltersChange((current) => ({ ...current, station: event.target.value }))}>
+        <option value="">All stations</option>
+        {stations.map((station) => <option key={station}>{station}</option>)}
+      </select>
+      {activeTab === "transactions" ? (
+        <select value={filters.side} onChange={(event) => onFiltersChange((current) => ({ ...current, side: event.target.value }))}>
+          <option value="ALL">All</option>
+          <option value="SELL">Sell</option>
+          <option value="BUY">Buy</option>
+        </select>
+      ) : (
+        <>
+          <label className="toggle-control">
+            <input type="checkbox" checked={filters.undercutOnly} onChange={(event) => onFiltersChange((current) => ({ ...current, undercutOnly: event.target.checked }))} />
+            <span>Undercut only</span>
+          </label>
+          <label className="toggle-control">
+            <input type="checkbox" checked={filters.unknownCostOnly} onChange={(event) => onFiltersChange((current) => ({ ...current, unknownCostOnly: event.target.checked }))} />
+            <span>Unknown cost</span>
+          </label>
+        </>
+      )}
+      <button className="icon-button text-button" onClick={() => onFiltersChange(emptyAccountFilters)}>
+        <X size={16} /> Clear filters
+      </button>
+      <button className="icon-button text-button" onClick={onRefreshAccount} disabled={busy || characters.length === 0}>
+        <RefreshCw size={16} /> Refresh account data
+      </button>
+    </section>
+  );
+}
+
+function OrdersTable({ rows, onEditCost }: { rows: OurOrder[]; onEditCost: (order: OurOrder) => Promise<void> }) {
+  return (
+    <section className="account-table-shell">
+      <table className="account-table">
+        <thead>
+          <tr>
+            <th>Character</th>
+            <th>Item</th>
+            <th>Station</th>
+            <th>Qty</th>
+            <th>Price</th>
+            <th>Lowest</th>
+            <th>Undercut</th>
+            <th>Update Price</th>
+            <th>Update Fee</th>
+            <th>Bought / Unit</th>
+            <th>Matched Qty</th>
+            <th>Profit / Unit</th>
+            <th>Profit Remain</th>
+            <th>Expires</th>
+            <th>Checked</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={`${row.characterId}-${row.orderId}`} className={row.isUndercut ? "is-undercut" : ""}>
+              <td>{row.characterName}</td>
+              <td>{row.itemName}<small>{row.typeId}</small></td>
+              <td>{row.stationName}</td>
+              <td>{row.volumeRemain}/{row.volumeTotal}</td>
+              <td>{formatIsk(row.price)}</td>
+              <td>{formatIsk(row.lowestCompetingPrice)}</td>
+              <td>{row.isUndercut ? "Undercut" : "OK"}</td>
+              <td>{formatIsk(row.suggestedUpdatePrice)}</td>
+              <td>{formatIsk(row.estimatedUpdateFee)}</td>
+              <td><button className="link-button" onClick={() => onEditCost(row)}>{row.boughtUnitPrice === null ? "Set" : `${formatIsk(row.boughtUnitPrice)}${row.manualCost ? " *" : ""}`}</button></td>
+              <td>{row.boughtQuantityMatched ?? ""}</td>
+              <td>{formatIsk(row.expectedProfitPerUnit)}</td>
+              <td>{formatIsk(row.expectedProfitRemaining)}</td>
+              <td>{shortDate(row.expiresAt)}</td>
+              <td>{shortDate(row.refreshedAt)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function TransactionsTable({ rows }: { rows: WalletTransaction[] }) {
+  return (
+    <section className="account-table-shell">
+      <table className="account-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Side</th>
+            <th>Item</th>
+            <th>Station</th>
+            <th>Qty</th>
+            <th>Unit Price</th>
+            <th>Total</th>
+            <th>Matched Order</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={`${row.characterId}-${row.transactionId}`} className={row.isBuy ? "is-buy" : "is-sell"}>
+              <td>{shortDate(row.transactionDate)}</td>
+              <td>{row.isBuy ? "Buy" : "Sell"}</td>
+              <td>{row.itemName}<small>{row.typeId}</small></td>
+              <td>{row.stationName}</td>
+              <td>{row.quantity}</td>
+              <td>{formatIsk(row.unitPrice)}</td>
+              <td>{formatIsk(row.totalPrice)}</td>
+              <td>{row.matchedOrderId ?? ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }
 
@@ -639,4 +883,16 @@ function secondsSince(value: string): number | null {
   const parsed = new Date(value).getTime();
   if (Number.isNaN(parsed)) return null;
   return Math.max(0, Math.round((Date.now() - parsed) / 1000));
+}
+
+function shortDate(value: string | null): string {
+  if (!value) return "";
+  const parsed = new Date(value).getTime();
+  if (Number.isNaN(parsed)) return value;
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(parsed);
 }

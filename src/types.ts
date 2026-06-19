@@ -151,6 +151,78 @@ export interface CharacterOrder {
   refreshedAt: string;
 }
 
+export interface WalletTransaction {
+  characterId: number;
+  transactionId: number;
+  transactionDate: string;
+  typeId: number;
+  itemName: string;
+  locationId: number;
+  stationName: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+  isBuy: boolean;
+  clientId: number;
+  matchedOrderId: number | null;
+}
+
+export interface SaleNotification {
+  id: number;
+  characterId: number;
+  transactionId: number;
+  happenedAt: string;
+  itemName: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+  seen: boolean;
+}
+
+export interface OurOrder {
+  characterId: number;
+  characterName: string;
+  orderId: number;
+  typeId: number;
+  itemName: string;
+  regionId: number;
+  locationId: number;
+  stationName: string;
+  price: number;
+  volumeRemain: number;
+  volumeTotal: number;
+  issued: string;
+  expiresAt: string;
+  refreshedAt: string;
+  lowestCompetingPrice: number | null;
+  isUndercut: boolean;
+  suggestedUpdatePrice: number | null;
+  estimatedUpdateFee: number | null;
+  boughtUnitPrice: number | null;
+  boughtQuantityMatched: number | null;
+  expectedProfitPerUnit: number | null;
+  expectedProfitRemaining: number | null;
+  manualCost: boolean;
+}
+
+export interface AccountRefreshResult {
+  characterId: number;
+  orders: number;
+  transactions: number;
+  newSaleNotifications: number;
+  apiCalls: number;
+  message: string;
+}
+
+export interface AccountFilters {
+  search: string;
+  characterId: number | null;
+  station: string;
+  undercutOnly: boolean;
+  unknownCostOnly: boolean;
+  side: string;
+}
+
 export interface Order {
   locationId: number;
   regionId: number;

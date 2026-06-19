@@ -187,6 +187,88 @@ struct CharacterOrder {
     refreshed_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct WalletTransaction {
+    character_id: i64,
+    transaction_id: i64,
+    transaction_date: String,
+    type_id: i64,
+    item_name: String,
+    location_id: i64,
+    station_name: String,
+    quantity: i64,
+    unit_price: f64,
+    total_price: f64,
+    is_buy: bool,
+    client_id: i64,
+    matched_order_id: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SaleNotification {
+    id: i64,
+    character_id: i64,
+    transaction_id: i64,
+    happened_at: String,
+    item_name: String,
+    quantity: i64,
+    unit_price: f64,
+    total_price: f64,
+    seen: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct OurOrder {
+    character_id: i64,
+    character_name: String,
+    order_id: i64,
+    type_id: i64,
+    item_name: String,
+    region_id: i64,
+    location_id: i64,
+    station_name: String,
+    price: f64,
+    volume_remain: i64,
+    volume_total: i64,
+    issued: String,
+    expires_at: String,
+    refreshed_at: String,
+    lowest_competing_price: Option<f64>,
+    is_undercut: bool,
+    suggested_update_price: Option<f64>,
+    estimated_update_fee: Option<f64>,
+    bought_unit_price: Option<f64>,
+    bought_quantity_matched: Option<i64>,
+    expected_profit_per_unit: Option<f64>,
+    expected_profit_remaining: Option<f64>,
+    manual_cost: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AccountRefreshResult {
+    character_id: i64,
+    orders: i64,
+    transactions: i64,
+    new_sale_notifications: i64,
+    api_calls: i64,
+    message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AccountFilters {
+    search: String,
+    character_id: Option<i64>,
+    station: String,
+    undercut_only: bool,
+    unknown_cost_only: bool,
+    side: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
@@ -221,12 +303,26 @@ struct EsiCharacterOrder {
 }
 
 #[derive(Debug, Deserialize)]
+struct EsiWalletTransaction {
+    transaction_id: i64,
+    date: String,
+    type_id: i64,
+    location_id: i64,
+    unit_price: f64,
+    quantity: i64,
+    client_id: i64,
+    is_buy: bool,
+}
+
+#[derive(Debug, Deserialize)]
 struct EsiOrder {
     location_id: i64,
     price: f64,
     volume_remain: f64,
     #[serde(default)]
     is_buy_order: bool,
+    #[serde(default)]
+    order_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -295,6 +391,12 @@ pub fn run() {
             start_eve_login,
             refresh_character_orders,
             list_character_orders,
+            refresh_account_data,
+            list_our_orders,
+            list_transactions,
+            list_sale_notifications,
+            update_order_cost_basis,
+            mark_sale_notifications_seen,
             get_refresh_status,
             discover_hot_products,
             start_refresh_next_batch,
@@ -436,6 +538,70 @@ fn list_character_orders(
 ) -> Result<Vec<CharacterOrder>, String> {
     let conn = open(&state)?;
     list_character_orders_inner(&conn, character_id)
+}
+
+#[tauri::command]
+fn refresh_account_data(
+    state: State<AppState>,
+    character_id: i64,
+) -> Result<AccountRefreshResult, String> {
+    let conn = open(&state)?;
+    refresh_account_data_inner(&conn, character_id)
+}
+
+#[tauri::command]
+fn list_our_orders(
+    state: State<AppState>,
+    filters: AccountFilters,
+) -> Result<Vec<OurOrder>, String> {
+    let conn = open(&state)?;
+    list_our_orders_inner(&conn, filters)
+}
+
+#[tauri::command]
+fn list_transactions(
+    state: State<AppState>,
+    filters: AccountFilters,
+) -> Result<Vec<WalletTransaction>, String> {
+    let conn = open(&state)?;
+    list_transactions_inner(&conn, filters)
+}
+
+#[tauri::command]
+fn list_sale_notifications(state: State<AppState>) -> Result<Vec<SaleNotification>, String> {
+    let conn = open(&state)?;
+    list_sale_notifications_inner(&conn)
+}
+
+#[tauri::command]
+fn update_order_cost_basis(
+    state: State<AppState>,
+    order_id: i64,
+    unit_cost: f64,
+    quantity: i64,
+) -> Result<(), String> {
+    let conn = open(&state)?;
+    conn.execute(
+        "insert into order_cost_basis(order_id, unit_cost, quantity, updated_at)
+         values (?1, ?2, ?3, ?4)
+         on conflict(order_id) do update set unit_cost=excluded.unit_cost, quantity=excluded.quantity, updated_at=excluded.updated_at",
+        params![order_id, unit_cost.max(0.0), quantity.max(0), Utc::now().to_rfc3339()],
+    )
+    .map_err(to_string)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn mark_sale_notifications_seen(state: State<AppState>, ids: Vec<i64>) -> Result<(), String> {
+    let conn = open(&state)?;
+    for id in ids {
+        conn.execute(
+            "update sale_notifications set seen = 1 where id = ?1",
+            params![id],
+        )
+        .map_err(to_string)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1646,6 +1812,58 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
           refreshed_at text not null,
           primary key(character_id, order_id)
         );
+        create table if not exists wallet_transactions(
+          character_id integer not null,
+          transaction_id integer not null,
+          transaction_date text not null,
+          type_id integer not null,
+          item_name text not null,
+          location_id integer not null,
+          station_name text not null,
+          quantity integer not null,
+          unit_price real not null,
+          total_price real not null,
+          is_buy integer not null,
+          client_id integer not null,
+          matched_order_id integer,
+          primary key(character_id, transaction_id)
+        );
+        create table if not exists order_snapshots(
+          character_id integer not null,
+          order_id integer not null,
+          type_id integer not null,
+          location_id integer not null,
+          price real not null,
+          volume_remain integer not null,
+          volume_total integer not null,
+          snapshot_at text not null,
+          primary key(character_id, order_id, snapshot_at)
+        );
+        create table if not exists order_cost_basis(
+          order_id integer primary key,
+          unit_cost real not null,
+          quantity integer not null,
+          updated_at text not null
+        );
+        create table if not exists sale_notifications(
+          id integer primary key autoincrement,
+          character_id integer not null,
+          transaction_id integer not null,
+          happened_at text not null,
+          item_name text not null,
+          quantity integer not null,
+          unit_price real not null,
+          total_price real not null,
+          seen integer not null default 0,
+          unique(character_id, transaction_id)
+        );
+        create table if not exists order_market_checks(
+          order_id integer primary key,
+          lowest_competing_price real,
+          is_undercut integer not null,
+          suggested_update_price real,
+          checked_at text not null
+        );
         "
     )?;
     let _ = conn.execute(
@@ -1786,13 +2004,34 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ),
         (
             "EVE SSO scopes",
-            "esi-markets.read_character_orders.v1",
+            "esi-markets.read_character_orders.v1 esi-wallet.read_character_wallet.v1",
             "Scopes requested when logging in with EVE.",
+        ),
+        (
+            "Account refresh interval seconds",
+            "300",
+            "How often account orders and wallet transactions should refresh.",
+        ),
+        (
+            "Broker/relist fee percent",
+            "1.5",
+            "Estimated fee percent used for order price update calculations.",
+        ),
+        (
+            "Minimum order update fee ISK",
+            "100",
+            "Minimum estimated ISK fee for updating an order price.",
         ),
     ];
     for row in discovery_settings {
         conn.execute("insert into settings(key, value, notes) values (?1, ?2, ?3) on conflict(key) do nothing", params![row.0, row.1, row.2])?;
     }
+    conn.execute(
+        "update settings
+         set value = trim(value || ' esi-wallet.read_character_wallet.v1')
+         where key = 'EVE SSO scopes' and instr(value, 'esi-wallet.read_character_wallet.v1') = 0",
+        [],
+    )?;
     conn.execute("delete from settings where key like 'Watchdog%'", [])?;
     conn.execute("update products set notes = '' where notes = 'Discovered from Fuzzwork aggregate snapshot'", [])?;
     conn.execute("update opportunities set notes = '' where notes = 'Discovered from Fuzzwork aggregate snapshot'", [])?;
@@ -2180,7 +2419,7 @@ fn start_eve_login_inner(conn: &Connection) -> Result<AuthCharacter, String> {
     let scopes = setting(
         conn,
         "EVE SSO scopes",
-        "esi-markets.read_character_orders.v1",
+        "esi-markets.read_character_orders.v1 esi-wallet.read_character_wallet.v1",
     );
     let (callback_port, callback_path) = callback_parts(&callback_url)?;
     let listener = TcpListener::bind(("127.0.0.1", callback_port))
@@ -2593,6 +2832,573 @@ fn list_character_orders_inner(
             .map_err(to_string)?,
     )?;
     Ok(result)
+}
+
+fn refresh_account_data_inner(
+    conn: &Connection,
+    character_id: i64,
+) -> Result<AccountRefreshResult, String> {
+    let mut api_calls = 0;
+    let orders = refresh_character_orders_inner(conn, character_id)?;
+    snapshot_character_orders(conn, character_id, &orders)?;
+    api_calls += 1;
+
+    let mut transactions = 0;
+    let mut message = format!("Refreshed {} active orders.", orders.len());
+    let scopes = character_scopes(conn, character_id)?;
+    if scopes
+        .split_whitespace()
+        .any(|scope| scope == "esi-wallet.read_character_wallet.v1")
+    {
+        transactions = refresh_wallet_transactions_inner(conn, character_id, &mut api_calls)?;
+        message = format!(
+            "{} Refreshed {} wallet transactions.",
+            message, transactions
+        );
+    } else {
+        message = format!(
+            "{} Re-login required for wallet transactions scope.",
+            message
+        );
+    }
+
+    let new_sale_notifications = create_sale_notifications(conn, character_id)?;
+    refresh_order_market_checks(conn, character_id, &mut api_calls)?;
+    insert_run(
+        conn,
+        RefreshRun {
+            refresh_time: Utc::now().to_rfc3339(),
+            items_scanned: orders.len() as i64,
+            opportunities_written: 0,
+            api_calls,
+            errors: String::new(),
+            skipped: "Account refresh".to_string(),
+            duration_seconds: 0,
+        },
+    )?;
+    Ok(AccountRefreshResult {
+        character_id,
+        orders: orders.len() as i64,
+        transactions,
+        new_sale_notifications,
+        api_calls,
+        message,
+    })
+}
+
+fn snapshot_character_orders(
+    conn: &Connection,
+    character_id: i64,
+    orders: &[CharacterOrder],
+) -> Result<(), String> {
+    let snapshot_at = Utc::now().to_rfc3339();
+    for order in orders {
+        conn.execute(
+            "insert into order_snapshots(character_id, order_id, type_id, location_id, price, volume_remain, volume_total, snapshot_at)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                character_id,
+                order.order_id,
+                order.type_id,
+                order.location_id,
+                order.price,
+                order.volume_remain,
+                order.volume_total,
+                snapshot_at
+            ],
+        )
+        .map_err(to_string)?;
+    }
+    Ok(())
+}
+
+fn character_scopes(conn: &Connection, character_id: i64) -> Result<String, String> {
+    conn.query_row(
+        "select scopes from auth_characters where character_id = ?1",
+        params![character_id],
+        |row| row.get(0),
+    )
+    .map_err(to_string)
+}
+
+fn refresh_wallet_transactions_inner(
+    conn: &Connection,
+    character_id: i64,
+    api_calls: &mut i64,
+) -> Result<i64, String> {
+    let access_token = valid_character_access_token(conn, character_id)?;
+    let base_url = setting(conn, "ESI base URL", "https://esi.evetech.net/latest");
+    let url = format!(
+        "{}/characters/{}/wallet/transactions/?datasource=tranquility",
+        base_url.trim_end_matches('/'),
+        character_id
+    );
+    let rows: Vec<EsiWalletTransaction> = fetch_auth_json(conn, &url, &access_token, api_calls)?;
+    for tx in &rows {
+        let item_name = item_name(conn, tx.type_id)?;
+        let station_name = station_name(conn, tx.location_id)?;
+        let matched_order_id = if tx.is_buy {
+            None
+        } else {
+            matching_sell_order_id(
+                conn,
+                character_id,
+                tx.type_id,
+                tx.location_id,
+                tx.unit_price,
+            )?
+        };
+        conn.execute(
+            "insert into wallet_transactions(character_id, transaction_id, transaction_date, type_id, item_name, location_id, station_name, quantity, unit_price, total_price, is_buy, client_id, matched_order_id)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             on conflict(character_id, transaction_id) do nothing",
+            params![
+                character_id,
+                tx.transaction_id,
+                tx.date,
+                tx.type_id,
+                item_name,
+                tx.location_id,
+                station_name,
+                tx.quantity,
+                tx.unit_price,
+                tx.unit_price * tx.quantity as f64,
+                if tx.is_buy { 1 } else { 0 },
+                tx.client_id,
+                matched_order_id
+            ],
+        )
+        .map_err(to_string)?;
+    }
+    Ok(rows.len() as i64)
+}
+
+fn matching_sell_order_id(
+    conn: &Connection,
+    character_id: i64,
+    type_id: i64,
+    location_id: i64,
+    unit_price: f64,
+) -> Result<Option<i64>, String> {
+    conn.query_row(
+        "select order_id from character_orders
+         where character_id = ?1 and type_id = ?2 and location_id = ?3 and is_buy_order = 0 and abs(price - ?4) < 0.01
+         order by issued desc limit 1",
+        params![character_id, type_id, location_id, unit_price],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(to_string)
+}
+
+fn create_sale_notifications(conn: &Connection, character_id: i64) -> Result<i64, String> {
+    let before: i64 = conn
+        .query_row("select count(*) from sale_notifications", [], |row| {
+            row.get(0)
+        })
+        .map_err(to_string)?;
+    conn.execute(
+        "insert or ignore into sale_notifications(character_id, transaction_id, happened_at, item_name, quantity, unit_price, total_price, seen)
+         select character_id, transaction_id, transaction_date, item_name, quantity, unit_price, total_price, 0
+         from wallet_transactions
+         where character_id = ?1 and is_buy = 0",
+        params![character_id],
+    )
+    .map_err(to_string)?;
+    let after: i64 = conn
+        .query_row("select count(*) from sale_notifications", [], |row| {
+            row.get(0)
+        })
+        .map_err(to_string)?;
+    Ok(after - before)
+}
+
+fn refresh_order_market_checks(
+    conn: &Connection,
+    character_id: i64,
+    api_calls: &mut i64,
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("select order_id, type_id, region_id, location_id from character_orders where character_id = ?1 and is_buy_order = 0 and state = 'open'")
+        .map_err(to_string)?;
+    let rows = rows(
+        stmt.query_map(params![character_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(to_string)?,
+    )?;
+    let base_url = setting(conn, "ESI base URL", "https://esi.evetech.net/latest");
+    let threshold = setting(conn, "ESI low error-limit threshold", "20")
+        .parse::<u64>()
+        .unwrap_or(20);
+    for (order_id, type_id, region_id, location_id) in rows {
+        let url = format!(
+            "{}/markets/{}/orders/?datasource=tranquility&order_type=sell&type_id={}&page=1",
+            base_url.trim_end_matches('/'),
+            region_id,
+            type_id
+        );
+        let public_orders: Vec<EsiOrder> = fetch_json(conn, &url, api_calls, threshold)?;
+        let lowest = public_orders
+            .iter()
+            .filter(|order| {
+                !order.is_buy_order
+                    && order.location_id == location_id
+                    && order.order_id.map(|id| id != order_id).unwrap_or(true)
+            })
+            .map(|order| order.price)
+            .min_by(|a, b| a.partial_cmp(b).unwrap());
+        let own_price: f64 = conn
+            .query_row(
+                "select price from character_orders where order_id = ?1",
+                params![order_id],
+                |row| row.get(0),
+            )
+            .map_err(to_string)?;
+        let is_undercut = lowest
+            .map(|price| price < own_price - 0.001)
+            .unwrap_or(false);
+        let suggested = lowest.map(|price| (price - 0.01).max(0.01));
+        conn.execute(
+            "insert into order_market_checks(order_id, lowest_competing_price, is_undercut, suggested_update_price, checked_at)
+             values (?1, ?2, ?3, ?4, ?5)
+             on conflict(order_id) do update set lowest_competing_price=excluded.lowest_competing_price, is_undercut=excluded.is_undercut, suggested_update_price=excluded.suggested_update_price, checked_at=excluded.checked_at",
+            params![order_id, lowest, if is_undercut { 1 } else { 0 }, suggested, Utc::now().to_rfc3339()],
+        )
+        .map_err(to_string)?;
+    }
+    Ok(())
+}
+
+fn list_our_orders_inner(
+    conn: &Connection,
+    filters: AccountFilters,
+) -> Result<Vec<OurOrder>, String> {
+    let fee_percent = setting(conn, "Broker/relist fee percent", "1.5")
+        .parse::<f64>()
+        .unwrap_or(1.5)
+        .max(0.0)
+        / 100.0;
+    let min_fee = setting(conn, "Minimum order update fee ISK", "100")
+        .parse::<f64>()
+        .unwrap_or(100.0)
+        .max(0.0);
+    let mut stmt = conn
+        .prepare(
+            "select o.character_id, coalesce(a.character_name, 'Character ' || o.character_id), o.order_id, o.type_id,
+                    coalesce(nullif(p.name, ''), nullif(t.name, ''), 'Type ' || o.type_id),
+                    o.region_id, o.location_id, o.price, o.volume_remain, o.volume_total, o.issued, o.duration, o.refreshed_at,
+                    c.lowest_competing_price, coalesce(c.is_undercut, 0), c.suggested_update_price,
+                    b.unit_cost, b.quantity
+             from character_orders o
+             left join auth_characters a on a.character_id = o.character_id
+             left join products p on p.type_id = o.type_id
+             left join item_types t on t.type_id = o.type_id
+             left join order_market_checks c on c.order_id = o.order_id
+             left join order_cost_basis b on b.order_id = o.order_id
+             where o.is_buy_order = 0 and o.state = 'open'
+             order by coalesce(c.is_undercut, 0) desc, o.refreshed_at desc, o.price desc",
+        )
+        .map_err(to_string)?;
+    let mut output = Vec::new();
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, f64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, i64>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, Option<f64>>(13)?,
+                row.get::<_, i64>(14)?,
+                row.get::<_, Option<f64>>(15)?,
+                row.get::<_, Option<f64>>(16)?,
+                row.get::<_, Option<i64>>(17)?,
+            ))
+        })
+        .map_err(to_string)?;
+    for row in rows {
+        let (
+            character_id,
+            character_name,
+            order_id,
+            type_id,
+            item_name_value,
+            region_id,
+            location_id,
+            price,
+            volume_remain,
+            volume_total,
+            issued,
+            duration,
+            refreshed_at,
+            lowest_competing_price,
+            is_undercut,
+            suggested_update_price,
+            manual_unit_cost,
+            manual_quantity,
+        ) = row.map_err(to_string)?;
+        let station = station_name(conn, location_id)?;
+        let inferred = fifo_cost_basis(conn, character_id, type_id, volume_total)?;
+        let bought_unit_price = manual_unit_cost.or(inferred.map(|value| value.0));
+        let bought_quantity_matched = manual_quantity.or(inferred.map(|value| value.1));
+        let estimated_update_fee = suggested_update_price
+            .filter(|_| is_undercut != 0)
+            .map(|suggested| (suggested * volume_remain as f64 * fee_percent).max(min_fee));
+        let expected_profit_per_unit = bought_unit_price.map(|cost| price - cost);
+        let expected_profit_remaining = expected_profit_per_unit
+            .map(|profit| profit * volume_remain as f64 - estimated_update_fee.unwrap_or(0.0));
+        output.push(OurOrder {
+            character_id,
+            character_name,
+            order_id,
+            type_id,
+            item_name: item_name_value,
+            region_id,
+            location_id,
+            station_name: station,
+            price,
+            volume_remain,
+            volume_total,
+            issued: issued.clone(),
+            expires_at: order_expires_at(&issued, duration),
+            refreshed_at,
+            lowest_competing_price,
+            is_undercut: is_undercut != 0,
+            suggested_update_price,
+            estimated_update_fee,
+            bought_unit_price,
+            bought_quantity_matched,
+            expected_profit_per_unit,
+            expected_profit_remaining,
+            manual_cost: manual_unit_cost.is_some(),
+        });
+    }
+    filter_our_orders(output, filters)
+}
+
+fn list_transactions_inner(
+    conn: &Connection,
+    filters: AccountFilters,
+) -> Result<Vec<WalletTransaction>, String> {
+    let mut stmt = conn
+        .prepare("select character_id, transaction_id, transaction_date, type_id, item_name, location_id, station_name, quantity, unit_price, total_price, is_buy, client_id, matched_order_id from wallet_transactions order by transaction_date desc, transaction_id desc limit 1000")
+        .map_err(to_string)?;
+    let rows = rows(
+        stmt.query_map([], wallet_transaction_from_row)
+            .map_err(to_string)?,
+    )?;
+    Ok(filter_transactions(rows, filters))
+}
+
+fn list_sale_notifications_inner(conn: &Connection) -> Result<Vec<SaleNotification>, String> {
+    let mut stmt = conn
+        .prepare("select id, character_id, transaction_id, happened_at, item_name, quantity, unit_price, total_price, seen from sale_notifications order by id desc limit 100")
+        .map_err(to_string)?;
+    let result = rows(
+        stmt.query_map([], sale_notification_from_row)
+            .map_err(to_string)?,
+    )?;
+    Ok(result)
+}
+
+fn fetch_auth_json<T: serde::de::DeserializeOwned>(
+    conn: &Connection,
+    url: &str,
+    access_token: &str,
+    api_calls: &mut i64,
+) -> Result<T, String> {
+    *api_calls += 1;
+    let response = reqwest::blocking::Client::builder()
+        .timeout(StdDuration::from_secs(30))
+        .build()
+        .map_err(to_string)?
+        .get(url)
+        .header(
+            "User-Agent",
+            setting(conn, "User agent", "EVE Metrade local app"),
+        )
+        .bearer_auth(access_token)
+        .send()
+        .map_err(to_string)?;
+    let status = response.status();
+    let _ = record_api_limit_state(conn, url, status.as_u16() as i64, response.headers());
+    if status.as_u16() == 404 {
+        return serde_json::from_str("[]").map_err(to_string);
+    }
+    if status.as_u16() == 420 || status.as_u16() == 429 {
+        wait_from_headers(response.headers(), 60);
+        return Err(format!("ESI rate limit {} for {}", status.as_u16(), url));
+    }
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        return Err(format!("ESI {} for {} {}", status.as_u16(), url, body));
+    }
+    response.json::<T>().map_err(to_string)
+}
+
+fn item_name(conn: &Connection, type_id: i64) -> Result<String, String> {
+    conn.query_row(
+        "select coalesce(nullif(p.name, ''), nullif(t.name, ''), 'Type ' || ?1)
+         from (select ?1 as type_id) x
+         left join products p on p.type_id = x.type_id
+         left join item_types t on t.type_id = x.type_id",
+        params![type_id],
+        |row| row.get(0),
+    )
+    .map_err(to_string)
+}
+
+fn station_name(conn: &Connection, location_id: i64) -> Result<String, String> {
+    conn.query_row(
+        "select coalesce((select name from trade_hubs where station_id = ?1), 'Location ' || ?1)",
+        params![location_id],
+        |row| row.get(0),
+    )
+    .map_err(to_string)
+}
+
+fn fifo_cost_basis(
+    conn: &Connection,
+    character_id: i64,
+    type_id: i64,
+    needed_quantity: i64,
+) -> Result<Option<(f64, i64)>, String> {
+    if needed_quantity <= 0 {
+        return Ok(None);
+    }
+    let mut stmt = conn
+        .prepare("select quantity, unit_price from wallet_transactions where character_id = ?1 and type_id = ?2 and is_buy = 1 order by transaction_date asc, transaction_id asc")
+        .map_err(to_string)?;
+    let rows = stmt
+        .query_map(params![character_id, type_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+        })
+        .map_err(to_string)?;
+    let mut remaining = needed_quantity;
+    let mut matched = 0;
+    let mut total = 0.0;
+    for row in rows {
+        let (quantity, price) = row.map_err(to_string)?;
+        if remaining <= 0 {
+            break;
+        }
+        let take = quantity.min(remaining).max(0);
+        matched += take;
+        total += take as f64 * price;
+        remaining -= take;
+    }
+    if matched == 0 {
+        Ok(None)
+    } else {
+        Ok(Some((total / matched as f64, matched)))
+    }
+}
+
+fn order_expires_at(issued: &str, duration: i64) -> String {
+    chrono::DateTime::parse_from_rfc3339(issued)
+        .map(|date| (date.with_timezone(&Utc) + Duration::days(duration)).to_rfc3339())
+        .unwrap_or_default()
+}
+
+fn filter_our_orders(
+    rows: Vec<OurOrder>,
+    filters: AccountFilters,
+) -> Result<Vec<OurOrder>, String> {
+    let search = filters.search.trim().to_lowercase();
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            filters
+                .character_id
+                .map(|id| id == row.character_id)
+                .unwrap_or(true)
+        })
+        .filter(|row| filters.station.trim().is_empty() || row.station_name == filters.station)
+        .filter(|row| !filters.undercut_only || row.is_undercut)
+        .filter(|row| !filters.unknown_cost_only || row.bought_unit_price.is_none())
+        .filter(|row| {
+            search.is_empty()
+                || format!(
+                    "{} {} {} {}",
+                    row.type_id, row.item_name, row.station_name, row.character_name
+                )
+                .to_lowercase()
+                .contains(&search)
+        })
+        .collect())
+}
+
+fn filter_transactions(
+    rows: Vec<WalletTransaction>,
+    filters: AccountFilters,
+) -> Vec<WalletTransaction> {
+    let search = filters.search.trim().to_lowercase();
+    rows.into_iter()
+        .filter(|row| {
+            filters
+                .character_id
+                .map(|id| id == row.character_id)
+                .unwrap_or(true)
+        })
+        .filter(|row| filters.station.trim().is_empty() || row.station_name == filters.station)
+        .filter(|row| match filters.side.as_str() {
+            "BUY" => row.is_buy,
+            "SELL" => !row.is_buy,
+            _ => true,
+        })
+        .filter(|row| {
+            search.is_empty()
+                || format!("{} {} {}", row.type_id, row.item_name, row.station_name)
+                    .to_lowercase()
+                    .contains(&search)
+        })
+        .collect()
+}
+
+fn wallet_transaction_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WalletTransaction> {
+    Ok(WalletTransaction {
+        character_id: row.get(0)?,
+        transaction_id: row.get(1)?,
+        transaction_date: row.get(2)?,
+        type_id: row.get(3)?,
+        item_name: row.get(4)?,
+        location_id: row.get(5)?,
+        station_name: row.get(6)?,
+        quantity: row.get(7)?,
+        unit_price: row.get(8)?,
+        total_price: row.get(9)?,
+        is_buy: row.get::<_, i64>(10)? != 0,
+        client_id: row.get(11)?,
+        matched_order_id: row.get(12)?,
+    })
+}
+
+fn sale_notification_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SaleNotification> {
+    Ok(SaleNotification {
+        id: row.get(0)?,
+        character_id: row.get(1)?,
+        transaction_id: row.get(2)?,
+        happened_at: row.get(3)?,
+        item_name: row.get(4)?,
+        quantity: row.get(5)?,
+        unit_price: row.get(6)?,
+        total_price: row.get(7)?,
+        seen: row.get::<_, i64>(8)? != 0,
+    })
 }
 
 fn record_api_limit_state(
