@@ -22,7 +22,9 @@ const filterStorageKey = "eve-metrade-filters-v1";
 const toolbarSettingKeys = new Set([
   "Automatic refresh enabled",
   "Automatic refresh interval seconds",
-  "Max items per refresh"
+  "Max items per refresh",
+  "Account refresh enabled",
+  "Account refresh interval seconds"
 ]);
 
 export function App() {
@@ -45,12 +47,14 @@ export function App() {
   const [accountFilters, setAccountFilters] = useState<AccountFilters>(emptyAccountFilters);
   const [intervalDraft, setIntervalDraft] = useState("600");
   const [maxItemsDraft, setMaxItemsDraft] = useState("5");
+  const [accountIntervalDraft, setAccountIntervalDraft] = useState("3600");
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [message, setMessage] = useState("Ready");
   const busyRef = useRef(false);
   const intervalEditingRef = useRef(false);
   const maxItemsEditingRef = useRef(false);
+  const accountIntervalEditingRef = useRef(false);
   const lastJobStatusRef = useRef<string | null>(null);
   const notifiedSaleIdsRef = useRef<Set<number>>(new Set());
 
@@ -84,6 +88,9 @@ export function App() {
     }
     if (!maxItemsEditingRef.current) {
       setMaxItemsDraft(settingValue(settingRows, "Max items per refresh") || "5");
+    }
+    if (!accountIntervalEditingRef.current) {
+      setAccountIntervalDraft(settingValue(settingRows, "Account refresh interval seconds") || "3600");
     }
     await loadAccountData();
   }
@@ -125,7 +132,8 @@ export function App() {
   const enabledHubCount = tradeHubs.filter((hub) => hub.enabled).length;
   const automaticEnabled = settingValue(settings, "Automatic refresh enabled") !== "FALSE";
   const automaticIntervalSeconds = Math.max(60, Number(settingValue(settings, "Automatic refresh interval seconds")) || 600);
-  const accountIntervalSeconds = Math.max(60, Number(settingValue(settings, "Account refresh interval seconds")) || 300);
+  const accountRefreshEnabled = settingValue(settings, "Account refresh enabled") !== "FALSE";
+  const accountIntervalSeconds = Math.max(3600, Number(settingValue(settings, "Account refresh interval seconds")) || 3600);
   const refreshRunning = refreshJob?.status === "running";
   const unseenSales = saleNotifications.filter((row) => !row.seen);
   const apiBurn = useMemo(
@@ -143,13 +151,14 @@ export function App() {
   }, [automaticEnabled, automaticIntervalSeconds, refreshRunning]);
 
   useEffect(() => {
+    if (!accountRefreshEnabled) return;
     if (!authCharacters.length) return;
     const timer = window.setInterval(() => {
       if (busyRef.current) return;
       refreshAccountData().catch((error) => setMessage((error as Error).message));
     }, accountIntervalSeconds * 1000);
     return () => window.clearInterval(timer);
-  }, [authCharacters, accountIntervalSeconds]);
+  }, [accountRefreshEnabled, authCharacters.length, accountIntervalSeconds]);
 
   useEffect(() => {
     const timer = window.setInterval(async () => {
@@ -247,6 +256,10 @@ export function App() {
     await runAction("Updated automatic refresh", () => api.updateSetting("Automatic refresh enabled", automaticEnabled ? "FALSE" : "TRUE"));
   }
 
+  async function toggleAccountRefresh() {
+    await runAction("Updated account refresh", () => api.updateSetting("Account refresh enabled", accountRefreshEnabled ? "FALSE" : "TRUE"));
+  }
+
   async function saveRefreshInterval() {
     const seconds = Math.max(60, Math.round(Number(intervalDraft) || 600));
     setIntervalDraft(seconds.toString());
@@ -257,6 +270,12 @@ export function App() {
     const count = Math.max(1, Math.round(Number(maxItemsDraft) || 5));
     setMaxItemsDraft(count.toString());
     await runAction("Updated items per refresh", () => api.updateSetting("Max items per refresh", count.toString()));
+  }
+
+  async function saveAccountRefreshInterval() {
+    const seconds = Math.max(3600, Math.round(Number(accountIntervalDraft) || 3600));
+    setAccountIntervalDraft(seconds.toString());
+    await runAction("Updated account refresh interval", () => api.updateSetting("Account refresh interval seconds", seconds.toString()));
   }
 
   async function discoverHotProducts() {
@@ -343,6 +362,7 @@ export function App() {
         <SummaryCard label="Hot candidates" value={discovery ? compactNumber(discovery.candidates) : "0"} />
         <SummaryCard label="Automatic refresh" value={automaticEnabled ? "ON" : "OFF"} icon={automaticEnabled ? <CheckCircle2 size={16} /> : <Square size={16} />} />
         <SummaryCard label="Refresh interval" value={`${automaticIntervalSeconds}s`} />
+        <SummaryCard label="Account refresh" value={accountRefreshEnabled ? `${accountIntervalSeconds}s` : "OFF"} />
         <SummaryCard label="Refresh job" value={refreshRunning ? `${refreshJob.scannedCount}/${refreshJob.totalCount || "?"}` : refreshJob?.status ?? "idle"} />
         <SummaryCard label="Last run" value={latestRun ? latestRun.refreshTime : "None"} />
       </section>
@@ -437,6 +457,17 @@ export function App() {
           activeTab={activeTab}
           onFiltersChange={setAccountFilters}
           onRefreshAccount={() => refreshAccountData()}
+          accountRefreshEnabled={accountRefreshEnabled}
+          accountIntervalDraft={accountIntervalDraft}
+          onToggleAccountRefresh={toggleAccountRefresh}
+          onAccountIntervalDraftChange={setAccountIntervalDraft}
+          onAccountIntervalFocus={() => {
+            accountIntervalEditingRef.current = true;
+          }}
+          onAccountIntervalBlur={() => {
+            accountIntervalEditingRef.current = false;
+            saveAccountRefreshInterval();
+          }}
           busy={busy}
         />
       )}
@@ -486,6 +517,12 @@ function AccountToolbar({
   activeTab,
   onFiltersChange,
   onRefreshAccount,
+  accountRefreshEnabled,
+  accountIntervalDraft,
+  onToggleAccountRefresh,
+  onAccountIntervalDraftChange,
+  onAccountIntervalFocus,
+  onAccountIntervalBlur,
   busy
 }: {
   filters: AccountFilters;
@@ -495,6 +532,12 @@ function AccountToolbar({
   activeTab: "orders" | "transactions";
   onFiltersChange: Dispatch<SetStateAction<AccountFilters>>;
   onRefreshAccount: () => Promise<void>;
+  accountRefreshEnabled: boolean;
+  accountIntervalDraft: string;
+  onToggleAccountRefresh: () => Promise<void>;
+  onAccountIntervalDraftChange: (value: string) => void;
+  onAccountIntervalFocus: () => void;
+  onAccountIntervalBlur: () => void;
   busy: boolean;
 }) {
   const stations = Array.from(new Set([...rows.map((row) => row.stationName), ...transactions.map((row) => row.stationName)].filter(Boolean))).sort();
@@ -543,6 +586,27 @@ function AccountToolbar({
       <button className="icon-button text-button" onClick={onRefreshAccount} disabled={busy || characters.length === 0}>
         <RefreshCw size={16} /> Refresh account data
       </button>
+      <label className="toggle-control">
+        <input type="checkbox" checked={accountRefreshEnabled} onChange={() => onToggleAccountRefresh()} disabled={busy || characters.length === 0} />
+        <span>Auto account refresh</span>
+      </label>
+      <label className="interval-control">
+        <span>Every</span>
+        <input
+          type="number"
+          min={3600}
+          step={300}
+          value={accountIntervalDraft}
+          onChange={(event) => onAccountIntervalDraftChange(event.target.value)}
+          onFocus={onAccountIntervalFocus}
+          onBlur={onAccountIntervalBlur}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
+          }}
+          disabled={busy || characters.length === 0}
+        />
+        <span>sec</span>
+      </label>
     </section>
   );
 }

@@ -2008,8 +2008,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "Scopes requested when logging in with EVE.",
         ),
         (
+            "Account refresh enabled",
+            "TRUE",
+            "Controls background account order and wallet transaction refresh.",
+        ),
+        (
             "Account refresh interval seconds",
-            "300",
+            "3600",
             "How often account orders and wallet transactions should refresh.",
         ),
         (
@@ -2030,6 +2035,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "update settings
          set value = trim(value || ' esi-wallet.read_character_wallet.v1')
          where key = 'EVE SSO scopes' and instr(value, 'esi-wallet.read_character_wallet.v1') = 0",
+        [],
+    )?;
+    conn.execute(
+        "update settings
+         set value = '3600'
+         where key = 'Account refresh interval seconds'
+           and coalesce(cast(value as integer), 0) < 3600",
         [],
     )?;
     conn.execute("delete from settings where key like 'Watchdog%'", [])?;
