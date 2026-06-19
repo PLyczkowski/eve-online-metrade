@@ -44,11 +44,8 @@ export function App() {
   const notifiedSaleIdsRef = useRef<Set<number>>(new Set());
 
   async function load() {
-    const [opportunityRows, accountOrderRows, transactionRows, notificationRows, productRows, hubRows, settingRows, runRows, discoverySummary, apiLimitStatus, authRows, authEventRows, orderRows, jobStatus] = await Promise.all([
+    const [opportunityRows, productRows, hubRows, settingRows, runRows, discoverySummary, apiLimitStatus, authRows, authEventRows, orderRows, jobStatus] = await Promise.all([
       api.listOpportunities(filters),
-      api.listOurOrders(accountFilters),
-      api.listTransactions(accountFilters),
-      api.listSaleNotifications(),
       api.listProducts(),
       api.listTradeHubs(),
       api.listSettings(),
@@ -61,9 +58,6 @@ export function App() {
       api.getRefreshStatus()
     ]);
     setOpportunities(opportunityRows);
-    setOurOrders(accountOrderRows);
-    setTransactions(transactionRows);
-    setSaleNotifications(notificationRows);
     setProducts(productRows);
     setTradeHubs(hubRows);
     setSettings(settingRows);
@@ -80,15 +74,35 @@ export function App() {
     if (!maxItemsEditingRef.current) {
       setMaxItemsDraft(settingValue(settingRows, "Max items per refresh") || "5");
     }
+    await loadAccountData();
+  }
+
+  async function loadAccountData() {
+    try {
+      const [accountOrderRows, transactionRows, notificationRows] = await Promise.all([
+        api.listOurOrders(accountFilters),
+        api.listTransactions(accountFilters),
+        api.listSaleNotifications()
+      ]);
+      setOurOrders(accountOrderRows);
+      setTransactions(transactionRows);
+      setSaleNotifications(notificationRows);
+    } catch (error) {
+      setMessage(`Account data load failed: ${(error as Error).message}`);
+    }
   }
 
   useEffect(() => {
     load().catch((error) => setMessage((error as Error).message));
-  }, [filters.status, filters.direction, filters.search, accountFilters.search, accountFilters.characterId, accountFilters.station, accountFilters.undercutOnly, accountFilters.unknownCostOnly, accountFilters.side]);
+  }, [filters.status, filters.direction, filters.search]);
 
   useEffect(() => {
     localStorage.setItem(filterStorageKey, JSON.stringify(filters));
   }, [filters]);
+
+  useEffect(() => {
+    loadAccountData();
+  }, [accountFilters.search, accountFilters.characterId, accountFilters.station, accountFilters.undercutOnly, accountFilters.unknownCostOnly, accountFilters.side]);
 
   const statusOptions = useMemo(() => {
     const values = new Set(opportunities.map((row) => row.status));
@@ -300,8 +314,8 @@ export function App() {
 
       <nav className="tabbar" aria-label="Main sections">
         <button className={activeTab === "opportunities" ? "active" : ""} onClick={() => setActiveTab("opportunities")}>Opportunities</button>
-        <button className={activeTab === "orders" ? "active" : ""} onClick={() => setActiveTab("orders")}>Our Orders</button>
-        <button className={activeTab === "transactions" ? "active" : ""} onClick={() => setActiveTab("transactions")}>Transactions</button>
+        <button className={activeTab === "orders" ? "active" : ""} onClick={() => setActiveTab("orders")}>Our Orders ({ourOrders.length})</button>
+        <button className={activeTab === "transactions" ? "active" : ""} onClick={() => setActiveTab("transactions")}>Transactions ({transactions.length})</button>
         {unseenSales.length ? (
           <button className="sale-badge" onClick={markSalesSeen} title="Mark sale notifications seen">
             <Bell size={15} /> {unseenSales.length} new sale{unseenSales.length === 1 ? "" : "s"}
@@ -546,6 +560,11 @@ function OrdersTable({ rows, onEditCost }: { rows: OurOrder[]; onEditCost: (orde
           </tr>
         </thead>
         <tbody>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={15} className="empty-table-cell">No active sell orders loaded. Use Refresh account data, or re-login if wallet/order scope changed.</td>
+            </tr>
+          ) : null}
           {rows.map((row) => (
             <tr key={`${row.characterId}-${row.orderId}`} className={row.isUndercut ? "is-undercut" : ""}>
               <td>{row.characterName}</td>
@@ -588,6 +607,11 @@ function TransactionsTable({ rows }: { rows: WalletTransaction[] }) {
           </tr>
         </thead>
         <tbody>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={8} className="empty-table-cell">No wallet transactions loaded. Use Refresh account data, and re-login if the wallet scope was just added.</td>
+            </tr>
+          ) : null}
           {rows.map((row) => (
             <tr key={`${row.characterId}-${row.transactionId}`} className={row.isBuy ? "is-buy" : "is-sell"}>
               <td>{shortDate(row.transactionDate)}</td>

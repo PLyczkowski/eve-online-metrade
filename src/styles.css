@@ -329,6 +329,13 @@ select,
   font-size: 11px;
 }
 
+.account-table .empty-table-cell {
+  height: 120px;
+  color: #697481;
+  text-align: center;
+  background: #f8fafc;
+}
+
 .account-table tr.is-undercut td {
   background: #fde2e2;
 }
