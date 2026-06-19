@@ -1,4 +1,15 @@
-import { Dispatch, SetStateAction, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, Dispatch, DragEvent, SetStateAction, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ColumnDef,
+  ColumnOrderState,
+  ColumnSizingState,
+  VisibilityState,
+  flexRender,
+  getCoreRowModel,
+  getSortedRowModel,
+  SortingState,
+  useReactTable
+} from "@tanstack/react-table";
 import { Bell, CheckCircle2, DatabaseZap, LogIn, Play, RefreshCw, RotateCcw, Search, Settings, Square, X } from "lucide-react";
 import { OpportunityTable } from "./OpportunityTable";
 import { api } from "../services/api";
@@ -537,95 +548,173 @@ function AccountToolbar({
 }
 
 function OrdersTable({ rows, onEditCost }: { rows: OurOrder[]; onEditCost: (order: OurOrder) => Promise<void> }) {
+  const columns = useMemo<ColumnDef<OurOrder>[]>(() => [
+    { accessorKey: "characterName", header: "Character", size: 130 },
+    { accessorKey: "itemName", header: "Item", size: 230, cell: ({ row }) => <>{row.original.itemName}<small>{row.original.typeId}</small></> },
+    { accessorKey: "stationName", header: "Station", size: 120 },
+    { id: "quantity", header: "Qty", size: 100, cell: ({ row }) => `${row.original.volumeRemain}/${row.original.volumeTotal}` },
+    { accessorKey: "price", header: "Price", size: 115, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "lowestCompetingPrice", header: "Lowest", size: 115, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "suggestedUpdatePrice", header: "Update Price", size: 125, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "estimatedUpdateFee", header: "Update Fee", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "expectedProfitRemaining", header: "Profit Remain", size: 130, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { id: "boughtUnitPrice", header: "Bought / Unit", size: 125, cell: ({ row }) => <button className="link-button" onClick={() => onEditCost(row.original)}>{row.original.boughtUnitPrice === null ? "Set" : `${formatIsk(row.original.boughtUnitPrice)}${row.original.manualCost ? " *" : ""}`}</button> },
+    { accessorKey: "boughtQuantityMatched", header: "Matched Qty", size: 115 },
+    { accessorKey: "expectedProfitPerUnit", header: "Profit / Unit", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "expiresAt", header: "Expires", size: 115, cell: ({ getValue }) => shortDate(getValue<string | null>()) },
+    { accessorKey: "refreshedAt", header: "Last Refresh", size: 125, cell: ({ getValue }) => shortDate(getValue<string | null>()) }
+  ], [onEditCost]);
   return (
-    <section className="account-table-shell">
-      <table className="account-table">
-        <thead>
-          <tr>
-            <th>Character</th>
-            <th>Item</th>
-            <th>Station</th>
-            <th>Qty</th>
-            <th>Price</th>
-            <th>Lowest</th>
-            <th>Undercut</th>
-            <th>Update Price</th>
-            <th>Update Fee</th>
-            <th>Bought / Unit</th>
-            <th>Matched Qty</th>
-            <th>Profit / Unit</th>
-            <th>Profit Remain</th>
-            <th>Expires</th>
-            <th>Checked</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={15} className="empty-table-cell">No active sell orders loaded. Use Refresh account data, or re-login if wallet/order scope changed.</td>
-            </tr>
-          ) : null}
-          {rows.map((row) => (
-            <tr key={`${row.characterId}-${row.orderId}`} className={row.isUndercut ? "is-undercut" : ""}>
-              <td>{row.characterName}</td>
-              <td>{row.itemName}<small>{row.typeId}</small></td>
-              <td>{row.stationName}</td>
-              <td>{row.volumeRemain}/{row.volumeTotal}</td>
-              <td>{formatIsk(row.price)}</td>
-              <td>{formatIsk(row.lowestCompetingPrice)}</td>
-              <td>{row.isUndercut ? "Undercut" : "OK"}</td>
-              <td>{formatIsk(row.suggestedUpdatePrice)}</td>
-              <td>{formatIsk(row.estimatedUpdateFee)}</td>
-              <td><button className="link-button" onClick={() => onEditCost(row)}>{row.boughtUnitPrice === null ? "Set" : `${formatIsk(row.boughtUnitPrice)}${row.manualCost ? " *" : ""}`}</button></td>
-              <td>{row.boughtQuantityMatched ?? ""}</td>
-              <td>{formatIsk(row.expectedProfitPerUnit)}</td>
-              <td>{formatIsk(row.expectedProfitRemaining)}</td>
-              <td>{shortDate(row.expiresAt)}</td>
-              <td>{shortDate(row.refreshedAt)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
+    <AccountDataTable
+      tableId="orders"
+      rows={rows}
+      columns={columns}
+      emptyMessage="No active sell orders loaded. Use Refresh account data, or re-login if wallet/order scope changed."
+      getCellStyle={(columnId, row) => columnId === "price" && row.isUndercut ? { backgroundColor: "#fde2e2", fontWeight: 650 } : {}}
+    />
   );
 }
 
 function TransactionsTable({ rows }: { rows: WalletTransaction[] }) {
+  const columns = useMemo<ColumnDef<WalletTransaction>[]>(() => [
+    { accessorKey: "transactionDate", header: "Date", size: 135, cell: ({ getValue }) => shortDate(getValue<string | null>()) },
+    { id: "side", header: "Side", size: 80, cell: ({ row }) => row.original.isBuy ? "Buy" : "Sell" },
+    { accessorKey: "itemName", header: "Item", size: 250, cell: ({ row }) => <>{row.original.itemName}<small>{row.original.typeId}</small></> },
+    { accessorKey: "stationName", header: "Station", size: 120 },
+    { accessorKey: "quantity", header: "Qty", size: 90 },
+    { accessorKey: "unitPrice", header: "Unit Price", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "totalPrice", header: "Total", size: 130, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "matchedOrderId", header: "Matched Order", size: 130 }
+  ], []);
   return (
-    <section className="account-table-shell">
-      <table className="account-table">
+    <AccountDataTable
+      tableId="transactions"
+      rows={rows}
+      columns={columns}
+      emptyMessage="No wallet transactions loaded. Use Refresh account data, and re-login if the wallet scope was just added."
+      getRowClass={(row) => row.isBuy ? "is-buy" : "is-sell"}
+    />
+  );
+}
+
+function AccountDataTable<T>({
+  tableId,
+  rows,
+  columns,
+  emptyMessage,
+  getRowClass,
+  getCellStyle
+}: {
+  tableId: string;
+  rows: T[];
+  columns: ColumnDef<T>[];
+  emptyMessage: string;
+  getRowClass?: (row: T) => string;
+  getCellStyle?: (columnId: string, row: T) => CSSProperties;
+}) {
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(() => readSavedTableState(`eve-metrade-${tableId}-column-sizing-v1`, {}));
+  const [columnOrder, setColumnOrder] = useState<ColumnOrderState>(() => readSavedTableState(`eve-metrade-${tableId}-column-order-v1`, []));
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => readSavedTableState(`eve-metrade-${tableId}-column-visibility-v1`, {}));
+  const [headerMenu, setHeaderMenu] = useState<{ x: number; y: number } | null>(null);
+  const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
+  const [dropColumn, setDropColumn] = useState<string | null>(null);
+  const defaultColumnOrder = useMemo(() => columns.map((column) => column.id ?? (column as { accessorKey?: string }).accessorKey).filter(Boolean) as string[], [columns]);
+  const table = useReactTable({
+    data: rows,
+    columns,
+    state: { sorting, columnSizing, columnOrder: columnOrder.length ? columnOrder : defaultColumnOrder, columnVisibility },
+    onSortingChange: setSorting,
+    onColumnSizingChange: (updater) => persistTableState(`eve-metrade-${tableId}-column-sizing-v1`, updater, setColumnSizing),
+    onColumnOrderChange: (updater) => persistTableState(`eve-metrade-${tableId}-column-order-v1`, updater, setColumnOrder),
+    onColumnVisibilityChange: (updater) => persistTableState(`eve-metrade-${tableId}-column-visibility-v1`, updater, setColumnVisibility),
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    columnResizeMode: "onEnd"
+  });
+  return (
+    <section className="account-table-shell" onClick={() => setHeaderMenu(null)}>
+      <table className="account-table" style={{ width: table.getTotalSize() }}>
         <thead>
-          <tr>
-            <th>Date</th>
-            <th>Side</th>
-            <th>Item</th>
-            <th>Station</th>
-            <th>Qty</th>
-            <th>Unit Price</th>
-            <th>Total</th>
-            <th>Matched Order</th>
-          </tr>
+          {table.getHeaderGroups().map((group) => (
+            <tr key={group.id}>
+              {group.headers.map((header) => (
+                <th
+                  key={header.id}
+                  className={dropColumn === header.column.id ? "column-drop-target" : ""}
+                  style={{ width: header.getSize() }}
+                  draggable
+                  onDragStart={(event) => handleHeaderDragStart(event, header.column.id, setDraggedColumn)}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setDropColumn(header.column.id);
+                  }}
+                  onDragLeave={() => setDropColumn(null)}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    moveColumn(table.getAllLeafColumns().map((column) => column.id), draggedColumn, header.column.id, table.setColumnOrder);
+                    setDraggedColumn(null);
+                    setDropColumn(null);
+                  }}
+                  onDragEnd={() => {
+                    setDraggedColumn(null);
+                    setDropColumn(null);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setHeaderMenu({ x: event.clientX, y: event.clientY });
+                  }}
+                >
+                  <button className="column-header-button" onClick={header.column.getToggleSortingHandler()}>
+                    {flexRender(header.column.columnDef.header, header.getContext())}
+                    <span>{header.column.getIsSorted() === "asc" ? " ▲" : header.column.getIsSorted() === "desc" ? " ▼" : ""}</span>
+                  </button>
+                  <div
+                    className={`column-resizer ${header.column.getIsResizing() ? "is-resizing" : ""}`}
+                    style={{
+                      transform: header.column.getIsResizing()
+                        ? `translateX(${table.getState().columnSizingInfo.deltaOffset ?? 0}px)`
+                        : undefined
+                    }}
+                    onMouseDown={header.getResizeHandler()}
+                    onTouchStart={header.getResizeHandler()}
+                  />
+                </th>
+              ))}
+            </tr>
+          ))}
         </thead>
         <tbody>
-          {rows.length === 0 ? (
+          {table.getRowModel().rows.length === 0 ? (
             <tr>
-              <td colSpan={8} className="empty-table-cell">No wallet transactions loaded. Use Refresh account data, and re-login if the wallet scope was just added.</td>
+              <td colSpan={table.getVisibleLeafColumns().length || 1} className="empty-table-cell">{emptyMessage}</td>
             </tr>
           ) : null}
-          {rows.map((row) => (
-            <tr key={`${row.characterId}-${row.transactionId}`} className={row.isBuy ? "is-buy" : "is-sell"}>
-              <td>{shortDate(row.transactionDate)}</td>
-              <td>{row.isBuy ? "Buy" : "Sell"}</td>
-              <td>{row.itemName}<small>{row.typeId}</small></td>
-              <td>{row.stationName}</td>
-              <td>{row.quantity}</td>
-              <td>{formatIsk(row.unitPrice)}</td>
-              <td>{formatIsk(row.totalPrice)}</td>
-              <td>{row.matchedOrderId ?? ""}</td>
+          {table.getRowModel().rows.map((row) => (
+            <tr key={row.id} className={getRowClass?.(row.original) ?? ""}>
+              {row.getVisibleCells().map((cell) => (
+                <td key={cell.id} style={{ width: cell.column.getSize(), ...(getCellStyle?.(cell.column.id, row.original) ?? {}) }}>
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </td>
+              ))}
             </tr>
           ))}
         </tbody>
       </table>
+      {headerMenu ? (
+        <ColumnMenu
+          x={headerMenu.x}
+          y={headerMenu.y}
+          columns={table.getAllLeafColumns().map((column) => ({
+            id: column.id,
+            label: String(column.columnDef.header ?? column.id),
+            visible: column.getIsVisible(),
+            canHide: column.getCanHide(),
+            toggle: () => column.toggleVisibility()
+          }))}
+          onClose={() => setHeaderMenu(null)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -919,4 +1008,61 @@ function shortDate(value: string | null): string {
     hour: "2-digit",
     minute: "2-digit"
   }).format(parsed);
+}
+
+function readSavedTableState<T>(key: string, fallback: T): T {
+  try {
+    const saved = localStorage.getItem(key);
+    return saved ? JSON.parse(saved) as T : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function persistTableState<T>(key: string, updater: T | ((current: T) => T), setter: Dispatch<SetStateAction<T>>) {
+  setter((current) => {
+    const next = typeof updater === "function" ? (updater as (current: T) => T)(current) : updater;
+    localStorage.setItem(key, JSON.stringify(next));
+    return next;
+  });
+}
+
+function handleHeaderDragStart(event: DragEvent<HTMLTableCellElement>, columnId: string, setDraggedColumn: Dispatch<SetStateAction<string | null>>) {
+  setDraggedColumn(columnId);
+  event.dataTransfer.effectAllowed = "move";
+}
+
+function moveColumn(currentOrder: string[], from: string | null, to: string, setColumnOrder: (updater: ColumnOrderState) => void) {
+  if (!from || from === to) return;
+  const next = currentOrder.filter((id) => id !== from);
+  const toIndex = next.indexOf(to);
+  next.splice(toIndex < 0 ? next.length : toIndex, 0, from);
+  setColumnOrder(next);
+}
+
+function ColumnMenu({
+  x,
+  y,
+  columns,
+  onClose
+}: {
+  x: number;
+  y: number;
+  columns: Array<{ id: string; label: string; visible: boolean; canHide: boolean; toggle: () => void }>;
+  onClose: () => void;
+}) {
+  return (
+    <div className="column-menu" style={{ left: x, top: y }} onClick={(event) => event.stopPropagation()}>
+      <header>
+        <strong>Columns</strong>
+        <button onClick={onClose}>Close</button>
+      </header>
+      {columns.map((column) => (
+        <label key={column.id}>
+          <input type="checkbox" checked={column.visible} disabled={!column.canHide} onChange={column.toggle} />
+          <span>{column.label}</span>
+        </label>
+      ))}
+    </div>
+  );
 }

@@ -301,7 +301,7 @@ select,
   width: 100%;
   min-width: 1380px;
   border-collapse: collapse;
-  table-layout: auto;
+  table-layout: fixed;
   font-size: 13px;
 }
 
@@ -324,6 +324,14 @@ select,
   background: #f3f6f9;
   color: #40505f;
   font-size: 12px;
+}
+
+.account-table th {
+  position: sticky;
+}
+
+.account-table th .column-resizer {
+  right: -3px;
 }
 
 .account-table small {
@@ -469,6 +477,51 @@ select,
   width: 2px;
   background: #2b6cb0;
   box-shadow: 0 0 0 1px rgba(43, 108, 176, 0.16);
+}
+
+.column-drop-target::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 3px;
+  background: #2b6cb0;
+  z-index: 4;
+}
+
+.column-menu {
+  position: fixed;
+  z-index: 30;
+  width: 240px;
+  max-height: min(420px, calc(100vh - 40px));
+  overflow: auto;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #bfc7d1;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.22);
+  border-radius: 6px;
+}
+
+.column-menu header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.column-menu header button {
+  border: 0;
+  background: transparent;
+  color: #1f5f9f;
+  cursor: pointer;
+}
+
+.column-menu label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 2px 4px;
 }
 
 .table-scroll tbody {

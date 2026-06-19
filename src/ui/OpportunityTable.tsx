@@ -1,7 +1,9 @@
-import { CSSProperties, Dispatch, MouseEvent, SetStateAction, useMemo, useRef, useState } from "react";
+import { CSSProperties, Dispatch, DragEvent, MouseEvent, SetStateAction, useMemo, useRef, useState } from "react";
 import {
+  ColumnOrderState,
   ColumnDef,
   ColumnSizingState,
+  VisibilityState,
   flexRender,
   getCoreRowModel,
   getSortedRowModel,
@@ -13,6 +15,8 @@ import type { Opportunity } from "../types";
 import { formatIsk, formatPercent } from "../domain/format";
 
 const columnSizingStorageKey = "eve-metrade-column-sizing-v1";
+const columnOrderStorageKey = "eve-metrade-column-order-v1";
+const columnVisibilityStorageKey = "eve-metrade-column-visibility-v1";
 
 interface Props {
   rows: Opportunity[];
@@ -24,8 +28,13 @@ interface Props {
 
 export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNotes, onDisableProduct }: Props) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "estimatedProfit", desc: true }]);
-  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(() => readSavedColumnSizing());
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(() => readSavedState(columnSizingStorageKey, {}));
+  const [columnOrder, setColumnOrder] = useState<ColumnOrderState>(() => readSavedState(columnOrderStorageKey, []));
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => readSavedState(columnVisibilityStorageKey, {}));
   const [menu, setMenu] = useState<{ x: number; y: number; row: Opportunity } | null>(null);
+  const [headerMenu, setHeaderMenu] = useState<{ x: number; y: number } | null>(null);
+  const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
+  const [dropColumn, setDropColumn] = useState<string | null>(null);
   const [selectedTypeIds, setSelectedTypeIds] = useState<Set<number>>(() => new Set());
   const [lastSelectedTypeId, setLastSelectedTypeId] = useState<number | null>(null);
   const selectedTypeIdsRef = useRef(selectedTypeIds);
@@ -58,15 +67,31 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
     { accessorKey: "notes", header: "My Notes", size: 180 }
   ], []);
 
+  const defaultColumnOrder = useMemo(() => columns.map((column) => column.id ?? (column as { accessorKey?: string }).accessorKey).filter(Boolean) as string[], [columns]);
+
   const table = useReactTable({
     data: rows,
     columns,
-    state: { sorting, columnSizing },
+    state: { sorting, columnSizing, columnOrder: columnOrder.length ? columnOrder : defaultColumnOrder, columnVisibility },
     onSortingChange: setSorting,
     onColumnSizingChange: (updater) => {
       setColumnSizing((current) => {
         const next = typeof updater === "function" ? updater(current) : updater;
         localStorage.setItem(columnSizingStorageKey, JSON.stringify(next));
+        return next;
+      });
+    },
+    onColumnOrderChange: (updater) => {
+      setColumnOrder((current) => {
+        const next = typeof updater === "function" ? updater(current) : updater;
+        localStorage.setItem(columnOrderStorageKey, JSON.stringify(next));
+        return next;
+      });
+    },
+    onColumnVisibilityChange: (updater) => {
+      setColumnVisibility((current) => {
+        const next = typeof updater === "function" ? updater(current) : updater;
+        localStorage.setItem(columnVisibilityStorageKey, JSON.stringify(next));
         return next;
       });
     },
@@ -98,7 +123,10 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
     <section
       className="table-shell"
       tabIndex={0}
-      onClick={() => setMenu(null)}
+      onClick={() => {
+        setMenu(null);
+        setHeaderMenu(null);
+      }}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           applySelectedTypeIds(new Set());
@@ -124,7 +152,32 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
                 {group.headers.map((header) => (
                   <th
                     key={header.id}
+                    className={dropColumn === header.column.id ? "column-drop-target" : ""}
                     style={{ width: header.getSize() }}
+                    draggable
+                    onDragStart={(event) => {
+                      setDraggedColumn(header.column.id);
+                      event.dataTransfer.effectAllowed = "move";
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      setDropColumn(header.column.id);
+                    }}
+                    onDragLeave={() => setDropColumn(null)}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      moveColumn(table.getAllLeafColumns().map((column) => column.id), draggedColumn, header.column.id, table.setColumnOrder);
+                      setDraggedColumn(null);
+                      setDropColumn(null);
+                    }}
+                    onDragEnd={() => {
+                      setDraggedColumn(null);
+                      setDropColumn(null);
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setHeaderMenu({ x: event.clientX, y: event.clientY });
+                    }}
                   >
                     <button className="column-header-button" onClick={header.column.getToggleSortingHandler()} title="Click to sort">
                       {flexRender(header.column.columnDef.header, header.getContext())}
@@ -192,6 +245,20 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
           <button onClick={() => window.open(`https://everef.net/type/${menu.row.typeId}`, "_blank")}>Open EVE item reference</button>
         </div>
       ) : null}
+      {headerMenu ? (
+        <ColumnMenu
+          x={headerMenu.x}
+          y={headerMenu.y}
+          columns={table.getAllLeafColumns().map((column) => ({
+            id: column.id,
+            label: String(column.columnDef.header ?? column.id),
+            visible: column.getIsVisible(),
+            canHide: column.getCanHide(),
+            toggle: () => column.toggleVisibility()
+          }))}
+          onClose={() => setHeaderMenu(null)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -257,13 +324,48 @@ function myDestinationPriceColor(row: Opportunity): CSSProperties {
   return { backgroundColor: undercut ? "#fde2e2" : "#dcfce7", fontWeight: 650 };
 }
 
-function readSavedColumnSizing(): ColumnSizingState {
+function readSavedState<T>(key: string, fallback: T): T {
   try {
-    const saved = localStorage.getItem(columnSizingStorageKey);
-    return saved ? JSON.parse(saved) as ColumnSizingState : {};
+    const saved = localStorage.getItem(key);
+    return saved ? JSON.parse(saved) as T : fallback;
   } catch {
-    return {};
+    return fallback;
   }
+}
+
+function moveColumn(currentOrder: string[], from: string | null, to: string, setColumnOrder: (updater: ColumnOrderState) => void) {
+  if (!from || from === to) return;
+  const next = currentOrder.filter((id) => id !== from);
+  const toIndex = next.indexOf(to);
+  next.splice(toIndex < 0 ? next.length : toIndex, 0, from);
+  setColumnOrder(next);
+}
+
+function ColumnMenu({
+  x,
+  y,
+  columns,
+  onClose
+}: {
+  x: number;
+  y: number;
+  columns: Array<{ id: string; label: string; visible: boolean; canHide: boolean; toggle: () => void }>;
+  onClose: () => void;
+}) {
+  return (
+    <div className="column-menu" style={{ left: x, top: y }} onClick={(event) => event.stopPropagation()}>
+      <header>
+        <strong>Columns</strong>
+        <button onClick={onClose}>Close</button>
+      </header>
+      {columns.map((column) => (
+        <label key={column.id}>
+          <input type="checkbox" checked={column.visible} disabled={!column.canHide} onChange={column.toggle} />
+          <span>{column.label}</span>
+        </label>
+      ))}
+    </div>
+  );
 }
 
 function formatQuantity(value: number | null): string {
