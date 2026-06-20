@@ -166,6 +166,7 @@ export const seedOpportunities: Opportunity[] = [
     score: null,
     cargoUsedPercent: null,
     suggestedBuyQuantity: null,
+    destinationOrderCount: null,
     myDestinationSellPriceMin: null,
     myDestinationSellPriceMax: null,
     myDestinationSellQuantity: null,

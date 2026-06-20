@@ -20,6 +20,7 @@ const row: Opportunity = {
   score: 42,
   cargoUsedPercent: 0.42,
   suggestedBuyQuantity: 93,
+  destinationOrderCount: 3,
   myDestinationSellPriceMin: null,
   myDestinationSellPriceMax: null,
   myDestinationSellQuantity: null,
@@ -101,5 +102,20 @@ describe("OpportunityTable", () => {
     expect(tableRows[0].className).toContain("is-selected");
     fireEvent.keyDown(shell, { key: "Escape" });
     expect(tableRows[0].className).not.toContain("is-selected");
+  });
+
+  it("shows destination orders", () => {
+    render(
+      <OpportunityTable
+        rows={[row]}
+        onRefreshRow={vi.fn()}
+        onRefreshRows={vi.fn()}
+        onEditNotes={vi.fn()}
+        onDisableProduct={vi.fn()}
+      />
+    );
+
+    expect(screen.getAllByText("Dest Orders").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("3").length).toBeGreaterThan(0);
   });
 });

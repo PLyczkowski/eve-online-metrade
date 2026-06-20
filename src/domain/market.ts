@@ -15,6 +15,7 @@ interface HubData {
   lowestSell: number;
   referenceSell: number;
   availableAtLowest: number;
+  orderCount: number;
   volume: number;
 }
 
@@ -77,7 +78,7 @@ export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
   const suggestedBuyQuantity = suggestedBuyUnits(sourceAvailable, cargoUnits, destinationVolumeUnits);
   const estimatedProfit = Math.max(0, suggestedBuyQuantity * profitPerUnit);
   const cargoUsedPercent = cargoUsedFraction(config.shipCargoCapacityM3, product.volumeM3 ?? null, suggestedBuyQuantity);
-  const score = opportunityScore(estimatedProfit, cargoUsedPercent, suggestedBuyQuantity, sellHub.volume, config);
+  const score = opportunityScore(estimatedProfit, cargoUsedPercent, suggestedBuyQuantity, sellHub.volume, sellHub.orderCount, config);
 
   let status: Opportunity["status"] = "GOOD";
   let scriptNotes = "Both prices are sell orders; direction is chosen from lower sell price to higher sell price.";
@@ -112,6 +113,7 @@ export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
     score,
     cargoUsedPercent,
     suggestedBuyQuantity,
+    destinationOrderCount: sellHub.orderCount,
     myDestinationSellPriceMin: null,
     myDestinationSellPriceMax: null,
     myDestinationSellQuantity: null,
@@ -139,6 +141,7 @@ function hubSellData(name: HubName, stationId: number, regionId: number, orders:
     lowestSell,
     referenceSell: depth,
     availableAtLowest: sells.filter((order) => Number(order.price) <= lowestSell).reduce((sum, order) => sum + Number(order.volumeRemain || 0), 0),
+    orderCount: sells.length,
     volume
   };
 }
@@ -173,19 +176,26 @@ function cargoUsedFraction(cargoM3: number, volumeM3: number | null, estimatedUn
   return Math.min(1, Math.max(0, (estimatedUnits * volumeM3) / cargoM3));
 }
 
-function opportunityScore(estimatedProfit: number | null, cargoUsedPercent: number | null, suggestedBuyQuantity: number | null, sellRegionVolume: number | null, config: MarketConfig): number | null {
+function opportunityScore(estimatedProfit: number | null, cargoUsedPercent: number | null, suggestedBuyQuantity: number | null, sellRegionVolume: number | null, destinationOrderCount: number | null, config: MarketConfig): number | null {
   if (estimatedProfit === null) return null;
   if (estimatedProfit <= 0) return 0;
   const profitWeight = Math.max(0, config.scoreProfitWeight);
   const sellThroughWeight = Math.max(0, config.scoreSellThroughWeight);
   const cargoWeight = Math.max(0, config.scoreCargoWeight);
-  const totalWeight = Math.max(1, profitWeight + sellThroughWeight + cargoWeight);
+  const destinationOrderWeight = 60;
+  const totalWeight = Math.max(1, profitWeight + sellThroughWeight + cargoWeight + destinationOrderWeight);
   const profitScore = Math.min(1, Math.max(0, estimatedProfit / Math.max(1, config.scoreTargetProfit)));
   const cargoScore = cargoUsedPercent === null ? 0.5 : Math.min(1, Math.max(0, 1 - cargoUsedPercent));
   const velocityScore = suggestedBuyQuantity !== null && sellRegionVolume !== null && suggestedBuyQuantity > 0 && sellRegionVolume > 0
     ? Math.min(1, Math.max(0, 1 - Math.min(1, suggestedBuyQuantity / sellRegionVolume)))
     : 0;
-  return ((profitScore * profitWeight + velocityScore * sellThroughWeight + cargoScore * cargoWeight) / totalWeight) * 100;
+  const orderScore = destinationOrderScore(destinationOrderCount);
+  return ((profitScore * profitWeight + velocityScore * sellThroughWeight + cargoScore * cargoWeight + orderScore * destinationOrderWeight) / totalWeight) * 100;
+}
+
+function destinationOrderScore(count: number | null): number {
+  if (count == null) return 0.5;
+  return Math.min(1, Math.max(0, 1 - (Math.max(1, count) - 1) / 24));
 }
 
 function emptyMarketRow(
@@ -215,6 +225,7 @@ function emptyMarketRow(
     score: null,
     cargoUsedPercent: null,
     suggestedBuyQuantity: null,
+    destinationOrderCount: null,
     myDestinationSellPriceMin: null,
     myDestinationSellPriceMax: null,
     myDestinationSellQuantity: null,

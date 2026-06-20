@@ -140,6 +140,51 @@ describe("analyzeOpportunity", () => {
     expect(row.suggestedBuyQuantity).toBe(6);
     expect(row.estimatedProfit).toBe(600);
   });
+
+  it("counts destination station sell orders", () => {
+    const row = analyzeOpportunity({
+      product,
+      config: { ...defaultMarketConfig, minimumEstimatedProfit: 1 },
+      refreshedAt: "2026-06-17T12:00:00Z",
+      forgeOrders: [order(defaultMarketConfig.jitaStationId, 100, 1000)],
+      domainOrders: [
+        order(defaultMarketConfig.amarrStationId, 200, 1000),
+        order(defaultMarketConfig.amarrStationId, 210, 1000),
+        order(defaultMarketConfig.amarrStationId, 220, 1000),
+        order(123, 150, 1000)
+      ],
+      forgeVolume: 1000,
+      domainVolume: 1000
+    });
+
+    expect(row.direction).toBe("Jita -> Amarr");
+    expect(row.destinationOrderCount).toBe(3);
+  });
+
+  it("scores lower destination order counts higher", () => {
+    const lowCompetition = analyzeOpportunity({
+      product,
+      config: { ...defaultMarketConfig, minimumEstimatedProfit: 1 },
+      refreshedAt: "2026-06-17T12:00:00Z",
+      forgeOrders: [order(defaultMarketConfig.jitaStationId, 100, 1000)],
+      domainOrders: [order(defaultMarketConfig.amarrStationId, 200, 1000)],
+      forgeVolume: 1000,
+      domainVolume: 1000
+    });
+    const highCompetition = analyzeOpportunity({
+      product,
+      config: { ...defaultMarketConfig, minimumEstimatedProfit: 1 },
+      refreshedAt: "2026-06-17T12:00:00Z",
+      forgeOrders: [order(defaultMarketConfig.jitaStationId, 100, 1000)],
+      domainOrders: Array.from({ length: 30 }, (_, index) => order(defaultMarketConfig.amarrStationId, 200 + index, 1000)),
+      forgeVolume: 1000,
+      domainVolume: 1000
+    });
+
+    expect(lowCompetition.destinationOrderCount).toBe(1);
+    expect(highCompetition.destinationOrderCount).toBe(30);
+    expect(lowCompetition.score ?? 0).toBeGreaterThan(highCompetition.score ?? 0);
+  });
 });
 
 describe("shouldSkipLowTargetVolume", () => {

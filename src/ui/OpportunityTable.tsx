@@ -63,6 +63,7 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
     { id: "myDestinationSellPrice", header: "My Dest Price", size: 140, cell: ({ row }) => formatPriceRange(row.original.myDestinationSellPriceMin, row.original.myDestinationSellPriceMax) },
     { accessorKey: "buyRegionVolume", header: "Buy 30d Vol", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "sellRegionVolume", header: "Sell 30d Vol", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
+    { accessorKey: "destinationOrderCount", header: "Dest Orders", size: 110, cell: ({ getValue }) => formatQuantity(getValue<number | null>()) },
     { accessorKey: "lastRefreshMinutes", header: "Last Refresh", size: 120, cell: ({ getValue }) => getValue<number | null>() === null ? "" : `${getValue<number>()} min ago` },
     { accessorKey: "notes", header: "My Notes", size: 180 }
   ], []);
@@ -320,6 +321,7 @@ function cellColor(columnId: string, row: Opportunity): CSSProperties {
   if (columnId === "myDestinationSellPrice") {
     return myDestinationPriceColor(row);
   }
+  if (columnId === "destinationOrderCount") return { backgroundColor: destinationOrdersScale(row.destinationOrderCount) };
   if (columnId === "lastRefreshMinutes") return { backgroundColor: refreshScale(row.lastRefreshMinutes) };
   return {};
 }
@@ -421,6 +423,15 @@ function refreshScale(minutes: number | null): string {
   }
   const ratio = (minutes - 17.5) / 12.5;
   return mixColor([255, 242, 165], [244, 204, 204], ratio);
+}
+
+function destinationOrdersScale(count: number | null): string {
+  if (count == null) return "#ffffff";
+  const ratio = Math.min(1, Math.max(0, (Math.max(1, count) - 1) / 24));
+  if (ratio <= 0.375) {
+    return mixColor([220, 252, 231], [255, 255, 255], ratio / 0.375);
+  }
+  return mixColor([255, 255, 255], [254, 202, 202], (ratio - 0.375) / 0.625);
 }
 
 function mixColor(from: [number, number, number], to: [number, number, number], ratio: number): string {

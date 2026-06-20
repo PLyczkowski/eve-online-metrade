@@ -72,6 +72,7 @@ struct Opportunity {
     score: Option<f64>,
     cargo_used_percent: Option<f64>,
     suggested_buy_quantity: Option<f64>,
+    destination_order_count: Option<i64>,
     my_destination_sell_price_min: Option<f64>,
     my_destination_sell_price_max: Option<f64>,
     my_destination_sell_quantity: Option<i64>,
@@ -347,6 +348,7 @@ struct HubPrices {
     lowest_sell: f64,
     reference_sell: f64,
     available_at_lowest: f64,
+    order_count: i64,
 }
 
 struct HubMarketData {
@@ -706,6 +708,7 @@ fn list_opportunities(
                         )
                     end
                 ),
+                o.destination_order_count,
                 my_orders.price_min,
                 my_orders.price_max,
                 my_orders.quantity,
@@ -747,6 +750,7 @@ fn list_opportunities(
             score_profit_weight,
             score_sell_through_weight,
             score_cargo_weight,
+            60.0,
         );
     }
     let search = filters.search.trim().to_lowercase();
@@ -1617,6 +1621,7 @@ fn analyze(
         score: None,
         cargo_used_percent,
         suggested_buy_quantity: Some(suggested_buy_quantity),
+        destination_order_count: Some(route.sell.prices.order_count),
         my_destination_sell_price_min: None,
         my_destination_sell_price_max: None,
         my_destination_sell_quantity: None,
@@ -1637,6 +1642,7 @@ fn hub_prices(orders: &[&EsiOrder], min_units: f64, min_isk_depth: f64) -> HubPr
             lowest_sell: 0.0,
             reference_sell: 0.0,
             available_at_lowest: 0.0,
+            order_count: 0,
         };
     }
     let available_at_lowest = orders
@@ -1656,6 +1662,7 @@ fn hub_prices(orders: &[&EsiOrder], min_units: f64, min_isk_depth: f64) -> HubPr
                 lowest_sell,
                 reference_sell: order.price,
                 available_at_lowest,
+                order_count: orders.len() as i64,
             };
         }
     }
@@ -1666,6 +1673,7 @@ fn hub_prices(orders: &[&EsiOrder], min_units: f64, min_isk_depth: f64) -> HubPr
             .map(|order| order.price)
             .unwrap_or(lowest_sell),
         available_at_lowest,
+        order_count: orders.len() as i64,
     }
 }
 
@@ -1675,12 +1683,15 @@ fn opportunity_score(
     profit_weight: f64,
     sell_through_weight: f64,
     cargo_weight: f64,
+    destination_order_weight: f64,
 ) -> Option<f64> {
     let estimated_profit = row.estimated_profit?;
     if estimated_profit <= 0.0 {
         return Some(0.0);
     }
-    let total_weight = (profit_weight + sell_through_weight + cargo_weight).max(1.0);
+    let destination_order_weight = destination_order_weight.max(0.0);
+    let total_weight =
+        (profit_weight + sell_through_weight + cargo_weight + destination_order_weight).max(1.0);
     let profit_score = (estimated_profit / target_profit.max(1.0)).clamp(0.0, 1.0);
     let cargo_score = row
         .cargo_used_percent
@@ -1692,13 +1703,22 @@ fn opportunity_score(
         }
         _ => 0.0,
     };
+    let destination_order_score = destination_order_score(row.destination_order_count);
     Some(
         ((profit_score * profit_weight)
             + (velocity_score * sell_through_weight)
-            + (cargo_score * cargo_weight))
+            + (cargo_score * cargo_weight)
+            + (destination_order_score * destination_order_weight))
             / total_weight
             * 100.0,
     )
+}
+
+fn destination_order_score(count: Option<i64>) -> f64 {
+    match count {
+        Some(value) => (1.0 - ((value.max(1) as f64 - 1.0) / 24.0)).clamp(0.0, 1.0),
+        None => 0.5,
+    }
 }
 fn cargo_unit_capacity(cargo_m3: f64, volume_m3: Option<f64>) -> Option<f64> {
     let volume = volume_m3?;
@@ -1762,7 +1782,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         create table if not exists opportunities(
           type_id integer primary key, status text not null, direction text not null, item_name text not null,
           buy_hub text not null, sell_hub text not null, buy_price real, sell_reference real, destination_lowest_sell real, profit_per_unit real,
-          spread real, source_available real, estimated_profit real, cargo_used_percent real, suggested_buy_quantity real, buy_region_volume real, sell_region_volume real,
+          spread real, source_available real, estimated_profit real, cargo_used_percent real, suggested_buy_quantity real, destination_order_count integer, buy_region_volume real, sell_region_volume real,
           last_refresh text, notes text not null, script_notes text not null
         );
         create table if not exists refresh_runs(refresh_time text not null, items_scanned integer not null, opportunities_written integer not null, api_calls integer not null, errors text not null, skipped text not null, duration_seconds integer not null);
@@ -1884,6 +1904,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     );
     let _ = conn.execute(
         "alter table opportunities add column suggested_buy_quantity real",
+        [],
+    );
+    let _ = conn.execute(
+        "alter table opportunities add column destination_order_count integer",
         [],
     );
     conn.execute(
@@ -3946,10 +3970,10 @@ fn mark_product_cold(conn: &Connection, type_id: i64) -> Result<(), String> {
 
 fn upsert_opportunity(conn: &Connection, row: &Opportunity) -> Result<(), String> {
     conn.execute(
-        "insert into opportunities(type_id, status, direction, item_name, buy_hub, sell_hub, buy_price, sell_reference, destination_lowest_sell, profit_per_unit, spread, source_available, estimated_profit, cargo_used_percent, suggested_buy_quantity, buy_region_volume, sell_region_volume, last_refresh, notes, script_notes)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
-         on conflict(type_id) do update set status=excluded.status, direction=excluded.direction, item_name=excluded.item_name, buy_hub=excluded.buy_hub, sell_hub=excluded.sell_hub, buy_price=excluded.buy_price, sell_reference=excluded.sell_reference, destination_lowest_sell=excluded.destination_lowest_sell, profit_per_unit=excluded.profit_per_unit, spread=excluded.spread, source_available=excluded.source_available, estimated_profit=excluded.estimated_profit, cargo_used_percent=excluded.cargo_used_percent, suggested_buy_quantity=excluded.suggested_buy_quantity, buy_region_volume=excluded.buy_region_volume, sell_region_volume=excluded.sell_region_volume, last_refresh=excluded.last_refresh, notes=excluded.notes, script_notes=excluded.script_notes",
-        params![row.type_id, row.status, row.direction, row.item_name, row.buy_hub, row.sell_hub, row.buy_price, row.sell_reference, row.destination_lowest_sell, row.profit_per_unit, row.spread, row.source_available, row.estimated_profit, row.cargo_used_percent, row.suggested_buy_quantity, row.buy_region_volume, row.sell_region_volume, row.last_refresh, row.notes, row.script_notes],
+        "insert into opportunities(type_id, status, direction, item_name, buy_hub, sell_hub, buy_price, sell_reference, destination_lowest_sell, profit_per_unit, spread, source_available, estimated_profit, cargo_used_percent, suggested_buy_quantity, destination_order_count, buy_region_volume, sell_region_volume, last_refresh, notes, script_notes)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+         on conflict(type_id) do update set status=excluded.status, direction=excluded.direction, item_name=excluded.item_name, buy_hub=excluded.buy_hub, sell_hub=excluded.sell_hub, buy_price=excluded.buy_price, sell_reference=excluded.sell_reference, destination_lowest_sell=excluded.destination_lowest_sell, profit_per_unit=excluded.profit_per_unit, spread=excluded.spread, source_available=excluded.source_available, estimated_profit=excluded.estimated_profit, cargo_used_percent=excluded.cargo_used_percent, suggested_buy_quantity=excluded.suggested_buy_quantity, destination_order_count=excluded.destination_order_count, buy_region_volume=excluded.buy_region_volume, sell_region_volume=excluded.sell_region_volume, last_refresh=excluded.last_refresh, notes=excluded.notes, script_notes=excluded.script_notes",
+        params![row.type_id, row.status, row.direction, row.item_name, row.buy_hub, row.sell_hub, row.buy_price, row.sell_reference, row.destination_lowest_sell, row.profit_per_unit, row.spread, row.source_available, row.estimated_profit, row.cargo_used_percent, row.suggested_buy_quantity, row.destination_order_count, row.buy_region_volume, row.sell_region_volume, row.last_refresh, row.notes, row.script_notes],
     ).map_err(to_string)?;
     Ok(())
 }
@@ -3979,6 +4003,7 @@ fn empty_opportunity(
         score: None,
         cargo_used_percent: None,
         suggested_buy_quantity: None,
+        destination_order_count: None,
         my_destination_sell_price_min: None,
         my_destination_sell_price_max: None,
         my_destination_sell_quantity: None,
@@ -4007,7 +4032,7 @@ fn latest_refresh_run(conn: &Connection) -> Result<RefreshRun, String> {
 }
 
 fn opportunity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Opportunity> {
-    let last_refresh: Option<String> = row.get(21)?;
+    let last_refresh: Option<String> = row.get(22)?;
     let minutes = last_refresh
         .as_ref()
         .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
@@ -4029,16 +4054,17 @@ fn opportunity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Opportunity
         score: None,
         cargo_used_percent: row.get(13)?,
         suggested_buy_quantity: row.get(14)?,
-        my_destination_sell_price_min: row.get(15)?,
-        my_destination_sell_price_max: row.get(16)?,
-        my_destination_sell_quantity: row.get(17)?,
-        my_destination_sell_order_count: row.get(18)?,
-        buy_region_volume: row.get(19)?,
-        sell_region_volume: row.get(20)?,
+        destination_order_count: row.get(15)?,
+        my_destination_sell_price_min: row.get(16)?,
+        my_destination_sell_price_max: row.get(17)?,
+        my_destination_sell_quantity: row.get(18)?,
+        my_destination_sell_order_count: row.get(19)?,
+        buy_region_volume: row.get(20)?,
+        sell_region_volume: row.get(21)?,
         last_refresh,
         last_refresh_minutes: minutes,
-        notes: row.get(22)?,
-        script_notes: row.get(23)?,
+        notes: row.get(23)?,
+        script_notes: row.get(24)?,
     })
 }
 
@@ -4056,7 +4082,10 @@ fn refresh_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RefreshRun>
 
 #[cfg(test)]
 mod tests {
-    use super::{market_tick_size, previous_market_tick, round_down_market_tick};
+    use super::{
+        destination_order_score, market_tick_size, opportunity_score, previous_market_tick,
+        round_down_market_tick, Opportunity,
+    };
 
     #[test]
     fn market_tick_size_uses_four_significant_digits() {
@@ -4080,5 +4109,58 @@ mod tests {
         assert_eq!(previous_market_tick(1_112_000.0), 1_111_000.0);
         assert_eq!(previous_market_tick(999_900.0), 999_800.0);
         assert_eq!(previous_market_tick(33.01), 33.0);
+    }
+
+    #[test]
+    fn destination_order_score_prefers_fewer_orders() {
+        assert_eq!(destination_order_score(Some(1)), 1.0);
+        assert_eq!(destination_order_score(Some(25)), 0.0);
+        assert_eq!(destination_order_score(Some(30)), 0.0);
+        assert_eq!(destination_order_score(None), 0.5);
+    }
+
+    #[test]
+    fn opportunity_score_prefers_lower_destination_order_count() {
+        let mut low = test_opportunity();
+        low.destination_order_count = Some(1);
+        let mut high = test_opportunity();
+        high.destination_order_count = Some(30);
+
+        let low_score = opportunity_score(&low, 100000000.0, 50.0, 40.0, 10.0, 60.0).unwrap();
+        let high_score = opportunity_score(&high, 100000000.0, 50.0, 40.0, 10.0, 60.0).unwrap();
+
+        assert!(low_score > high_score);
+    }
+
+    fn test_opportunity() -> Opportunity {
+        Opportunity {
+            status: "GOOD".to_string(),
+            direction: "Jita -> Amarr".to_string(),
+            type_id: 1,
+            item_name: "Test".to_string(),
+            buy_hub: "Jita".to_string(),
+            sell_hub: "Amarr".to_string(),
+            buy_price: Some(100.0),
+            sell_reference: Some(200.0),
+            destination_lowest_sell: Some(200.0),
+            profit_per_unit: Some(100.0),
+            spread: Some(1.0),
+            source_available: Some(1000.0),
+            estimated_profit: Some(1000000.0),
+            score: None,
+            cargo_used_percent: Some(0.5),
+            suggested_buy_quantity: Some(100.0),
+            destination_order_count: Some(1),
+            my_destination_sell_price_min: None,
+            my_destination_sell_price_max: None,
+            my_destination_sell_quantity: None,
+            my_destination_sell_order_count: None,
+            buy_region_volume: Some(1000.0),
+            sell_region_volume: Some(1000.0),
+            last_refresh: None,
+            last_refresh_minutes: None,
+            notes: String::new(),
+            script_notes: String::new(),
+        }
     }
 }

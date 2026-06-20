@@ -52,6 +52,7 @@ export interface Opportunity {
   score: number | null;
   cargoUsedPercent: number | null;
   suggestedBuyQuantity: number | null;
+  destinationOrderCount: number | null;
   myDestinationSellPriceMin: number | null;
   myDestinationSellPriceMax: number | null;
   myDestinationSellQuantity: number | null;
