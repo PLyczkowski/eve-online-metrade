@@ -321,7 +321,11 @@ function cellColor(columnId: string, row: Opportunity): CSSProperties {
   if (columnId === "myDestinationSellPrice") {
     return myDestinationPriceColor(row);
   }
-  if (columnId === "destinationOrderCount") return { backgroundColor: destinationOrdersScale(row.destinationOrderCount) };
+  if (columnId === "destinationOrderCount") {
+    return {
+      backgroundColor: destinationOrdersScale(row.destinationOrderCount)
+    };
+  }
   if (columnId === "lastRefreshMinutes") return { backgroundColor: refreshScale(row.lastRefreshMinutes) };
   return {};
 }
@@ -429,9 +433,9 @@ function destinationOrdersScale(count: number | null): string {
   if (count == null) return "#ffffff";
   const ratio = Math.min(1, Math.max(0, (Math.max(1, count) - 1) / 24));
   if (ratio <= 0.375) {
-    return mixColor([220, 252, 231], [255, 255, 255], ratio / 0.375);
+    return mixColor([85, 145, 85], [255, 255, 255], ratio / 0.375);
   }
-  return mixColor([255, 255, 255], [254, 202, 202], (ratio - 0.375) / 0.625);
+  return mixColor([255, 255, 255], [253, 226, 226], (ratio - 0.375) / 0.625);
 }
 
 function mixColor(from: [number, number, number], to: [number, number, number], ratio: number): string {

@@ -232,6 +232,13 @@ select {
   color: #9b2c2c;
 }
 
+.api-burn-actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .search-box {
   height: 34px;
   min-width: 300px;

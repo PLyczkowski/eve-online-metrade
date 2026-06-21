@@ -141,6 +141,7 @@ struct DiscoveryRun {
 struct ApiLimitStatus {
     last_response_at: String,
     last_status: i64,
+    last_error: String,
     error_limit_remain: Option<i64>,
     error_limit_reset: Option<i64>,
     retry_after: Option<i64>,
@@ -388,6 +389,7 @@ pub fn run() {
             list_refresh_runs,
             list_discovery_summary,
             list_api_limit_status,
+            clear_api_error,
             list_auth_characters,
             list_auth_events,
             start_eve_login,
@@ -481,6 +483,13 @@ fn list_discovery_summary(state: State<AppState>) -> Result<DiscoverySummary, St
 #[tauri::command]
 fn list_api_limit_status(state: State<AppState>) -> Result<ApiLimitStatus, String> {
     let conn = open(&state)?;
+    api_limit_status(&conn)
+}
+
+#[tauri::command]
+fn clear_api_error(state: State<AppState>) -> Result<ApiLimitStatus, String> {
+    let conn = open(&state)?;
+    set_api_state(&conn, "last_error", String::new())?;
     api_limit_status(&conn)
 }
 
@@ -2337,6 +2346,62 @@ fn to_string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(cause) = source {
+        parts.push(cause.to_string());
+        source = cause.source();
+    }
+    parts.join(" | caused by: ")
+}
+
+fn reqwest_error_detail(error: &reqwest::Error) -> String {
+    let kind = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_request() {
+        "request"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_body() {
+        "body"
+    } else {
+        "send"
+    };
+    format!("{} [{}]", error_chain(error), kind)
+}
+
+fn send_request_with_retries(
+    conn: &Connection,
+    url: &str,
+    request: reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::Response, String> {
+    let max_attempts = 3;
+    for attempt in 1..=max_attempts {
+        let Some(cloned) = request.try_clone() else {
+            return Err(format!("Could not clone request for retry: {}", url));
+        };
+        match cloned.send() {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                let detail = reqwest_error_detail(&error);
+                let _ = record_api_request_error(conn, url, &detail);
+                if attempt < max_attempts {
+                    std::thread::sleep(StdDuration::from_millis(500 * attempt as u64));
+                    continue;
+                }
+                return Err(format!(
+                    "request failed after {} attempts for {}: {}",
+                    max_attempts, url, detail
+                ));
+            }
+        }
+    }
+    Err(format!("request failed for {}", url))
+}
+
 fn csv_f64(record: &csv::StringRecord, index: usize) -> f64 {
     record
         .get(index)
@@ -2388,6 +2453,7 @@ fn api_limit_status(conn: &Connection) -> Result<ApiLimitStatus, String> {
         last_status: api_state(conn, "last_status", "0")
             .parse::<i64>()
             .unwrap_or(0),
+        last_error: api_state(conn, "last_error", ""),
         error_limit_remain: optional_i64(api_state(conn, "error_limit_remain", "")),
         error_limit_reset: optional_i64(api_state(conn, "error_limit_reset", "")),
         retry_after: optional_i64(api_state(conn, "retry_after", "")),
@@ -3278,7 +3344,7 @@ fn fetch_auth_json<T: serde::de::DeserializeOwned>(
     api_calls: &mut i64,
 ) -> Result<T, String> {
     *api_calls += 1;
-    let response = reqwest::blocking::Client::builder()
+    let request = reqwest::blocking::Client::builder()
         .timeout(StdDuration::from_secs(30))
         .build()
         .map_err(to_string)?
@@ -3287,9 +3353,8 @@ fn fetch_auth_json<T: serde::de::DeserializeOwned>(
             "User-Agent",
             setting(conn, "User agent", "EVE Metrade local app"),
         )
-        .bearer_auth(access_token)
-        .send()
-        .map_err(to_string)?;
+        .bearer_auth(access_token);
+    let response = send_request_with_retries(conn, url, request)?;
     let status = response.status();
     let _ = record_api_limit_state(conn, url, status.as_u16() as i64, response.headers());
     if status.as_u16() == 404 {
@@ -3303,7 +3368,13 @@ fn fetch_auth_json<T: serde::de::DeserializeOwned>(
         let body = response.text().unwrap_or_default();
         return Err(format!("ESI {} for {} {}", status.as_u16(), url, body));
     }
-    response.json::<T>().map_err(to_string)
+    response.json::<T>().map_err(|error| {
+        format!(
+            "failed to decode JSON from {}: {}",
+            url,
+            reqwest_error_detail(&error)
+        )
+    })
 }
 
 fn item_name(conn: &Connection, type_id: i64) -> Result<String, String> {
@@ -3491,6 +3562,7 @@ fn record_api_limit_state(
     set_api_state(conn, "rate_limit_limit", rate_limit_limit)?;
     set_api_state(conn, "rate_limit_remaining", rate_limit_remaining)?;
     set_api_state(conn, "rate_limit_used", rate_limit_used)?;
+    set_api_state(conn, "last_error", String::new())?;
     set_api_state(
         conn,
         "rate_limited",
@@ -3501,6 +3573,15 @@ fn record_api_limit_state(
         },
     )?;
     set_api_state(conn, "last_url", url.to_string())?;
+    Ok(())
+}
+
+fn record_api_request_error(conn: &Connection, url: &str, error: &str) -> Result<(), String> {
+    set_api_state(conn, "last_response_at", Utc::now().to_rfc3339())?;
+    set_api_state(conn, "last_status", "0".to_string())?;
+    set_api_state(conn, "rate_limited", "FALSE".to_string())?;
+    set_api_state(conn, "last_url", url.to_string())?;
+    set_api_state(conn, "last_error", error.to_string())?;
     Ok(())
 }
 
@@ -3872,14 +3953,13 @@ fn fetch_json<T: serde::de::DeserializeOwned>(
     error_limit_threshold: u64,
 ) -> Result<T, String> {
     *api_calls += 1;
-    let response = reqwest::blocking::Client::builder()
+    let request = reqwest::blocking::Client::builder()
         .timeout(StdDuration::from_secs(30))
         .build()
         .map_err(to_string)?
         .get(url)
-        .header("User-Agent", "EVE Metrade local app")
-        .send()
-        .map_err(to_string)?;
+        .header("User-Agent", "EVE Metrade local app");
+    let response = send_request_with_retries(conn, url, request)?;
     let status = response.status();
     let _ = record_api_limit_state(conn, url, status.as_u16() as i64, response.headers());
     maybe_wait_for_esi_reset(response.headers(), error_limit_threshold);
@@ -3893,7 +3973,13 @@ fn fetch_json<T: serde::de::DeserializeOwned>(
     if !status.is_success() {
         return Err(format!("ESI {} for {}", status.as_u16(), url));
     }
-    response.json::<T>().map_err(to_string)
+    response.json::<T>().map_err(|error| {
+        format!(
+            "failed to decode JSON from {}: {}",
+            url,
+            reqwest_error_detail(&error)
+        )
+    })
 }
 
 fn maybe_wait_for_esi_reset(headers: &reqwest::header::HeaderMap, threshold: u64) {

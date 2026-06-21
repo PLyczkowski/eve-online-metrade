@@ -319,6 +319,12 @@ export function App() {
     await runAction("Cleared sale notifications", () => api.markSaleNotificationsSeen(unseenSales.map((sale) => sale.id)));
   }
 
+  async function clearApiError() {
+    const next = await api.clearApiError();
+    setApiLimit(next);
+    setMessage("Cleared ESI request error");
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -375,7 +381,14 @@ export function App() {
         <div className="api-burn-track" title={apiBurn.label}>
           <div className={`api-burn-fill ${apiBurn.level}`} style={{ width: `${Math.min(100, apiBurn.percent)}%` }} />
         </div>
-        <span className={`api-burn-label ${apiBurn.level}`}>{apiBurn.label}</span>
+        <div className="api-burn-actions">
+          <span className={`api-burn-label ${apiBurn.level}`}>{apiBurn.label}</span>
+          {apiLimit?.lastError ? (
+            <button className="link-button" onClick={clearApiError} disabled={busy}>
+              Clear
+            </button>
+          ) : null}
+        </div>
       </section>
 
       {activeTab === "opportunities" ? <section className="toolbar" aria-label="Table controls">
@@ -990,6 +1003,16 @@ function compactNumber(value: number): string {
 }
 
 function estimateApiBurn(runs: RefreshRun[], intervalSeconds: number, safeBudget: number, apiLimit: ApiLimitStatus | null) {
+  if (apiLimit?.lastError) {
+    return {
+      callsPerHour: 0,
+      percent: 100,
+      safeBudget,
+      level: "danger",
+      label: "Request error",
+      detail: apiLimit.lastError
+    };
+  }
   if (apiLimit?.rateLimited || (apiLimit?.retryAfter ?? 0) > 0) {
     return {
       callsPerHour: 0,

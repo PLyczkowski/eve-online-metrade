@@ -111,6 +111,7 @@ export interface DiscoveryRun {
 export interface ApiLimitStatus {
   lastResponseAt: string;
   lastStatus: number;
+  lastError: string;
   errorLimitRemain: number | null;
   errorLimitReset: number | null;
   retryAfter: number | null;

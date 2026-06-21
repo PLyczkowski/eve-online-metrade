@@ -10,6 +10,7 @@ type Command =
   | "list_refresh_runs"
   | "list_discovery_summary"
   | "list_api_limit_status"
+  | "clear_api_error"
   | "list_auth_characters"
   | "list_auth_events"
   | "start_eve_login"
@@ -84,6 +85,9 @@ export const api = {
   },
   listApiLimitStatus() {
     return call<ApiLimitStatus>("list_api_limit_status");
+  },
+  clearApiError() {
+    return call<ApiLimitStatus>("clear_api_error");
   },
   listAuthCharacters() {
     return call<AuthCharacter[]>("list_auth_characters");
@@ -165,6 +169,7 @@ async function fallbackCommand<T>(command: Command, args?: Record<string, unknow
   if (command === "list_refresh_runs") return store.refreshRuns.slice().reverse() as T;
   if (command === "list_discovery_summary") return fallbackDiscoverySummary(store) as T;
   if (command === "list_api_limit_status") return fallbackApiLimitStatus() as T;
+  if (command === "clear_api_error") return fallbackApiLimitStatus() as T;
   if (command === "list_auth_characters") return (store.authCharacters ?? []) as T;
   if (command === "list_auth_events") return (store.authEvents ?? []) as T;
   if (command === "list_character_orders") {
@@ -310,6 +315,7 @@ function fallbackApiLimitStatus(): ApiLimitStatus {
   return {
     lastResponseAt: "Browser fallback",
     lastStatus: 0,
+    lastError: "",
     errorLimitRemain: null,
     errorLimitReset: null,
     retryAfter: null,
