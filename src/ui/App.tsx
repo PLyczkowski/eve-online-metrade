@@ -334,13 +334,13 @@ export function App() {
         </div>
         <div className="topbar-actions">
           <button className="icon-button text-button" onClick={() => startRefreshJob("Refresh next batch", api.startRefreshNextBatch)} disabled={refreshRunning}>
-            <Play size={16} /> Refresh next batch
+            <Play size={16} /> Refresh batch
           </button>
           <button className="icon-button text-button" onClick={() => startRefreshJob("Reset refresh", api.startResetAndRefresh)} disabled={refreshRunning}>
-            <RotateCcw size={16} /> Reset and refresh
+            <RotateCcw size={16} /> Reset refresh
           </button>
           <button className="icon-button text-button" onClick={discoverHotProducts} disabled={busy}>
-            <DatabaseZap size={16} /> Discover hot items
+            <DatabaseZap size={16} /> Discover
           </button>
           <button className="icon-button" onClick={() => setSettingsOpen(true)} title="Settings">
             <Settings size={18} />

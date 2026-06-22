@@ -34,8 +34,8 @@ select {
 }
 
 .topbar {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, max-content);
   gap: 20px;
   align-items: center;
   min-width: 0;
@@ -74,12 +74,18 @@ select {
 
 .topbar-actions {
   justify-content: flex-end;
-  max-width: min(760px, 62vw);
+  width: min(760px, 62vw);
+  max-width: 100%;
   min-width: 0;
+  overflow: hidden;
 }
 
 .topbar-actions .text-button {
   white-space: nowrap;
+  min-width: 0;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .icon-button {
@@ -806,8 +812,9 @@ select,
   }
 
   .topbar-actions {
+    width: 100%;
     max-width: none;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .summary-band {
