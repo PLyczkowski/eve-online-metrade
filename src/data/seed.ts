@@ -25,6 +25,7 @@ export const seedSettings: Setting[] = [
   ["Sell reference minimum ISK depth", "25000000", "Use this cumulative ISK depth as an alternate sell-reference threshold."],
   ["Ship cargo capacity m3", "7900", "Maximum cargo volume used to cap estimated profit."],
   ["Suggested buy max destination 30d volume percent", "0.3", "Suggested buy quantity will not exceed this share of destination 30-day volume."],
+  ["Empty destination max 30d volume percent", "0.15", "Suggested buy cap when destination station has no sell orders."],
   ["Score target profit ISK", "100000000", "Estimated profit that gives full profit score."],
   ["Score profit weight", "50", "Relative score weight for estimated profit."],
   ["Score sell-through weight", "40", "Relative score weight for destination volume versus suggested buy amount."],

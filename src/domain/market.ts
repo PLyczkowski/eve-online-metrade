@@ -4,7 +4,8 @@ import type {
   MarketConfig,
   MarketHistoryRow,
   Opportunity,
-  Order
+  Order,
+  Product
 } from "../types";
 
 interface HubData {
@@ -16,7 +17,10 @@ interface HubData {
   referenceSell: number;
   availableAtLowest: number;
   orderCount: number;
+  buyOrderCount: number;
+  buyOrderUnits: number;
   volume: number;
+  historyReference: number;
 }
 
 export const defaultMarketConfig: MarketConfig = {
@@ -34,6 +38,7 @@ export const defaultMarketConfig: MarketConfig = {
   sellReferenceMinimumIskDepth: 25000000,
   shipCargoCapacityM3: 7900,
   suggestedBuyDestinationVolumePercent: 0.3,
+  emptyDestinationMaxVolumePercent: 0.15,
   scoreTargetProfit: 100000000,
   scoreProfitWeight: 50,
   scoreSellThroughWeight: 40,
@@ -50,17 +55,21 @@ export function recentVolume(history: MarketHistoryRow[], days: number, now = ne
 }
 
 export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
-  const { product, forgeOrders, domainOrders, forgeVolume, domainVolume, refreshedAt, config } = input;
-  const jita = hubSellData("Jita", config.jitaStationId, config.theForgeRegionId, forgeOrders, forgeVolume, config);
-  const amarr = hubSellData("Amarr", config.amarrStationId, config.domainRegionId, domainOrders, domainVolume, config);
+  const { product, forgeOrders, domainOrders, forgeVolume, domainVolume, forgeHistoryAverage = 0, domainHistoryAverage = 0, refreshedAt, config } = input;
+  const jita = hubSellData("Jita", config.jitaStationId, config.theForgeRegionId, forgeOrders, forgeVolume, forgeHistoryAverage, config);
+  const amarr = hubSellData("Amarr", config.amarrStationId, config.domainRegionId, domainOrders, domainVolume, domainHistoryAverage, config);
 
   if (!jita.lowestSell && !amarr.lowestSell) {
     return emptyMarketRow("NO SELL ORDERS", product.typeId, product.name, jita.volume, amarr.volume, refreshedAt, "No sell orders at either hub station", product.notes);
   }
   if (!jita.lowestSell) {
+    const row = emptyDestinationOpportunity(amarr, jita, product, refreshedAt, config);
+    if (row) return row;
     return emptyMarketRow("NO JITA SELL", product.typeId, product.name, jita.volume, amarr.volume, refreshedAt, "No Jita sell orders at hub station", product.notes);
   }
   if (!amarr.lowestSell) {
+    const row = emptyDestinationOpportunity(jita, amarr, product, refreshedAt, config);
+    if (row) return row;
     return emptyMarketRow("NO AMARR SELL", product.typeId, product.name, jita.volume, amarr.volume, refreshedAt, "No Amarr sell orders at hub station", product.notes);
   }
 
@@ -127,10 +136,11 @@ export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
   };
 }
 
-function hubSellData(name: HubName, stationId: number, regionId: number, orders: Order[], volume: number, config: MarketConfig): HubData {
+function hubSellData(name: HubName, stationId: number, regionId: number, orders: Order[], volume: number, historyReference: number, config: MarketConfig): HubData {
   const sells = orders
     .filter((order) => !order.isBuyOrder && Number(order.locationId) === Number(stationId))
     .sort((left, right) => left.price - right.price);
+  const buys = orders.filter((order) => order.isBuyOrder);
   const lowestSell = sells.length ? Number(sells[0].price) : 0;
   const depth = referenceSellPrice(sells, config.sellReferenceMinimumUnits, config.sellReferenceMinimumIskDepth);
   return {
@@ -142,7 +152,55 @@ function hubSellData(name: HubName, stationId: number, regionId: number, orders:
     referenceSell: depth,
     availableAtLowest: sells.filter((order) => Number(order.price) <= lowestSell).reduce((sum, order) => sum + Number(order.volumeRemain || 0), 0),
     orderCount: sells.length,
-    volume
+    buyOrderCount: buys.length,
+    buyOrderUnits: buys.reduce((sum, order) => sum + Number(order.volumeRemain || 0), 0),
+    volume,
+    historyReference
+  };
+}
+
+function emptyDestinationOpportunity(sourceHub: HubData, destinationHub: HubData, product: Product, refreshedAt: string, config: MarketConfig): Opportunity | null {
+  if (!sourceHub.lowestSell || destinationHub.lowestSell || destinationHub.historyReference <= 0 || destinationHub.volume < config.minimumDestinationVolume) return null;
+  const buyPrice = sourceHub.lowestSell;
+  const sellReference = destinationHub.historyReference;
+  const profitPerUnit = sellReference - buyPrice;
+  if (profitPerUnit <= 0) return null;
+  const sourceAvailable = sourceHub.availableAtLowest;
+  const cargoUnits = cargoUnitCapacity(config.shipCargoCapacityM3, product.volumeM3 ?? null);
+  const destinationVolumeUnits = Math.floor(destinationHub.volume * Math.max(0, Math.min(1, config.emptyDestinationMaxVolumePercent)));
+  const suggestedBuyQuantity = suggestedBuyUnits(sourceAvailable, cargoUnits, destinationVolumeUnits);
+  const estimatedProfit = Math.max(0, suggestedBuyQuantity * profitPerUnit);
+  const cargoUsedPercent = cargoUsedFraction(config.shipCargoCapacityM3, product.volumeM3 ?? null, suggestedBuyQuantity);
+  const score = opportunityScore(estimatedProfit, cargoUsedPercent, suggestedBuyQuantity, destinationHub.volume, 0, config);
+  const status: Opportunity["status"] = estimatedProfit < config.minimumEstimatedProfit ? "LOW PROFIT" : "EMPTY DEST";
+  return {
+    status,
+    direction: `${sourceHub.name} -> ${destinationHub.name}`,
+    typeId: product.typeId,
+    itemName: product.name,
+    buyHub: sourceHub.name,
+    sellHub: destinationHub.name,
+    buyPrice,
+    sellReference,
+    destinationLowestSell: null,
+    profitPerUnit,
+    spread: buyPrice > 0 ? profitPerUnit / buyPrice : 0,
+    sourceAvailable,
+    estimatedProfit,
+    score,
+    cargoUsedPercent,
+    suggestedBuyQuantity,
+    destinationOrderCount: 0,
+    myDestinationSellPriceMin: null,
+    myDestinationSellPriceMax: null,
+    myDestinationSellQuantity: null,
+    myDestinationSellOrderCount: null,
+    buyRegionVolume: sourceHub.volume,
+    sellRegionVolume: destinationHub.volume,
+    lastRefresh: refreshedAt,
+    lastRefreshMinutes: 0,
+    notes: product.notes,
+    scriptNotes: `No sell orders at destination station; sell reference uses destination regional 30-day average. Destination buy orders: ${destinationHub.buyOrderCount}, buy units: ${Math.round(destinationHub.buyOrderUnits)}. Suggested buy is capped at 15% of destination 30-day volume.`
   };
 }
 

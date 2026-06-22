@@ -331,6 +331,8 @@ struct EsiOrder {
 struct HistoryRow {
     date: String,
     volume: i64,
+    #[serde(default)]
+    average: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -356,6 +358,9 @@ struct HubMarketData {
     hub: TradeHub,
     prices: HubPrices,
     volume: f64,
+    history_reference: f64,
+    buy_order_count: i64,
+    buy_order_units: f64,
 }
 
 struct RouteCandidate<'a> {
@@ -1397,7 +1402,7 @@ fn fetch_and_analyze(
         let orders: Vec<EsiOrder> = fetch_json(
             conn,
             &format!(
-                "{}/markets/{}/orders/?datasource=tranquility&order_type=sell&type_id={}&page=1",
+                "{}/markets/{}/orders/?datasource=tranquility&order_type=all&type_id={}&page=1",
                 base, hub.region_id, product.type_id
             ),
             api_calls,
@@ -1412,7 +1417,12 @@ fn fetch_and_analyze(
             api_calls,
             error_limit_threshold,
         )?;
-        markets.push((hub, orders, recent_volume(&history)));
+        markets.push((
+            hub,
+            orders,
+            recent_volume(&history),
+            recent_history_average(&history),
+        ));
     }
     Ok(analyze(conn, &product, metadata.volume_m3, markets))
 }
@@ -1483,7 +1493,7 @@ fn analyze(
     conn: &Connection,
     product: &Product,
     volume_m3: Option<f64>,
-    markets: Vec<(TradeHub, Vec<EsiOrder>, f64)>,
+    markets: Vec<(TradeHub, Vec<EsiOrder>, f64, f64)>,
 ) -> Opportunity {
     let min_spread = setting(conn, "Minimum spread", "0.2")
         .parse::<f64>()
@@ -1499,6 +1509,11 @@ fn analyze(
     .parse::<f64>()
     .unwrap_or(0.3)
     .clamp(0.0, 1.0);
+    let empty_destination_volume_percent =
+        setting(conn, "Empty destination max 30d volume percent", "0.15")
+            .parse::<f64>()
+            .unwrap_or(0.15)
+            .clamp(0.0, 1.0);
     let min_source_volume = setting(conn, "Minimum 30d source volume", "1")
         .parse::<f64>()
         .unwrap_or(1.0);
@@ -1520,16 +1535,20 @@ fn analyze(
     let refreshed = Utc::now().to_rfc3339();
     let hub_markets: Vec<HubMarketData> = markets
         .iter()
-        .map(|(hub, orders, volume)| {
+        .map(|(hub, orders, volume, history_reference)| {
             let mut sells: Vec<&EsiOrder> = orders
                 .iter()
                 .filter(|order| !order.is_buy_order && order.location_id == hub.station_id)
                 .collect();
+            let buys: Vec<&EsiOrder> = orders.iter().filter(|order| order.is_buy_order).collect();
             sells.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
             HubMarketData {
                 hub: hub.clone(),
                 prices: hub_prices(&sells, sell_ref_min_units, sell_ref_min_isk),
                 volume: *volume,
+                history_reference: *history_reference,
+                buy_order_count: buys.len() as i64,
+                buy_order_units: buys.iter().map(|order| order.volume_remain.max(0.0)).sum(),
             }
         })
         .collect();
@@ -1548,6 +1567,18 @@ fn analyze(
         );
     }
     if available_hubs.len() < 2 {
+        if let Some(row) = best_empty_destination_opportunity(
+            product,
+            volume_m3,
+            &hub_markets,
+            cargo_m3,
+            empty_destination_volume_percent,
+            min_dest_volume,
+            min_profit,
+            refreshed.clone(),
+        ) {
+            return row;
+        }
         let volume = available_hubs.first().map(|hub| hub.volume).unwrap_or(0.0);
         return empty_opportunity(
             "NO SPREAD",
@@ -1558,6 +1589,16 @@ fn analyze(
             "Only one enabled hub has sell orders.",
         );
     }
+    let empty_candidate = best_empty_destination_opportunity(
+        product,
+        volume_m3,
+        &hub_markets,
+        cargo_m3,
+        empty_destination_volume_percent,
+        min_dest_volume,
+        min_profit,
+        refreshed.clone(),
+    );
     let mut best: Option<RouteCandidate<'_>> = None;
     for buy in &available_hubs {
         for sell in &available_hubs {
@@ -1575,6 +1616,11 @@ fn analyze(
         }
     }
     let route = best.expect("at least two available hubs produce route candidates");
+    if let Some(empty) = empty_candidate {
+        if empty.profit_per_unit.unwrap_or(0.0) > route.profit {
+            return empty;
+        }
+    }
     let buy_hub = route.buy.hub.name.as_str();
     let sell_hub = route.sell.hub.name.as_str();
     let buy_price = route.buy.prices.lowest_sell;
@@ -1684,6 +1730,93 @@ fn hub_prices(orders: &[&EsiOrder], min_units: f64, min_isk_depth: f64) -> HubPr
         available_at_lowest,
         order_count: orders.len() as i64,
     }
+}
+
+fn best_empty_destination_opportunity(
+    product: &Product,
+    volume_m3: Option<f64>,
+    hubs: &[HubMarketData],
+    cargo_m3: f64,
+    destination_volume_percent: f64,
+    min_destination_volume: f64,
+    min_profit: f64,
+    refreshed: String,
+) -> Option<Opportunity> {
+    let mut best: Option<Opportunity> = None;
+    for source in hubs.iter().filter(|hub| hub.prices.lowest_sell > 0.0) {
+        for destination in hubs.iter().filter(|hub| hub.prices.lowest_sell <= 0.0) {
+            if source.hub.id == destination.hub.id
+                || destination.history_reference <= 0.0
+                || destination.volume < min_destination_volume
+            {
+                continue;
+            }
+            let buy_price = source.prices.lowest_sell;
+            let sell_reference = destination.history_reference;
+            let profit = sell_reference - buy_price;
+            if profit <= 0.0 {
+                continue;
+            }
+            let cargo_units = cargo_unit_capacity(cargo_m3, volume_m3);
+            let destination_volume_units =
+                Some((destination.volume * destination_volume_percent).floor());
+            let suggested_buy_quantity = suggested_buy_quantity(
+                source.prices.available_at_lowest,
+                cargo_units,
+                destination_volume_units,
+            );
+            let estimated_profit = (suggested_buy_quantity * profit).max(0.0);
+            let cargo_used_percent =
+                cargo_used_percent(cargo_m3, volume_m3, suggested_buy_quantity);
+            let status = if estimated_profit < min_profit {
+                "LOW PROFIT"
+            } else {
+                "EMPTY DEST"
+            };
+            let row = Opportunity {
+                status: status.to_string(),
+                direction: format!("{} -> {}", source.hub.name, destination.hub.name),
+                type_id: product.type_id,
+                item_name: product.name.clone(),
+                buy_hub: source.hub.name.clone(),
+                sell_hub: destination.hub.name.clone(),
+                buy_price: Some(buy_price),
+                sell_reference: Some(sell_reference),
+                destination_lowest_sell: None,
+                profit_per_unit: Some(profit),
+                spread: Some(if buy_price > 0.0 { profit / buy_price } else { 0.0 }),
+                source_available: Some(source.prices.available_at_lowest),
+                estimated_profit: Some(estimated_profit),
+                score: None,
+                cargo_used_percent,
+                suggested_buy_quantity: Some(suggested_buy_quantity),
+                destination_order_count: Some(0),
+                my_destination_sell_price_min: None,
+                my_destination_sell_price_max: None,
+                my_destination_sell_quantity: None,
+                my_destination_sell_order_count: None,
+                buy_region_volume: Some(source.volume),
+                sell_region_volume: Some(destination.volume),
+                last_refresh: Some(refreshed.clone()),
+                last_refresh_minutes: Some(0),
+                notes: product.notes.clone(),
+                script_notes: format!(
+                    "No sell orders at destination station; sell reference uses destination regional 30-day average. Destination buy orders: {}, buy units: {}. Suggested buy is capped at 15% of destination 30-day volume.",
+                    destination.buy_order_count,
+                    destination.buy_order_units.round()
+                ),
+            };
+            if best
+                .as_ref()
+                .and_then(|current| current.estimated_profit)
+                .map(|current_profit| estimated_profit > current_profit)
+                .unwrap_or(true)
+            {
+                best = Some(row);
+            }
+        }
+    }
+    best
 }
 
 fn opportunity_score(
@@ -2004,6 +2137,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "Suggested buy max destination 30d volume percent",
             "0.3",
             "Suggested buy quantity will not exceed this share of destination 30-day volume.",
+        ),
+        (
+            "Empty destination max 30d volume percent",
+            "0.15",
+            "Suggested buy cap when destination station has no sell orders.",
         ),
         (
             "Score target profit ISK",
@@ -4011,6 +4149,30 @@ fn recent_volume(rows: &[HistoryRow]) -> f64 {
                 .map(|_| row.volume as f64)
         })
         .sum()
+}
+
+fn recent_history_average(rows: &[HistoryRow]) -> f64 {
+    let cutoff = Utc::now().date_naive() - Duration::days(30);
+    let mut units = 0.0;
+    let mut value = 0.0;
+    for row in rows {
+        if chrono::NaiveDate::parse_from_str(&row.date, "%Y-%m-%d")
+            .ok()
+            .filter(|date| *date >= cutoff)
+            .is_none()
+        {
+            continue;
+        }
+        let volume = row.volume.max(0) as f64;
+        let average = row.average.unwrap_or(0.0).max(0.0);
+        units += volume;
+        value += volume * average;
+    }
+    if units > 0.0 {
+        value / units
+    } else {
+        0.0
+    }
 }
 
 fn should_skip_low_target_volume(

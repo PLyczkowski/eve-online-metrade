@@ -404,6 +404,7 @@ function formatPriceRange(min: number | null, max: number | null): string {
 
 function statusColor(status: Opportunity["status"]): string {
   if (status === "GOOD") return "#dcfce7";
+  if (status === "EMPTY DEST") return "#d9ead3";
   if (status === "LOW SPREAD" || status === "LOW PROFIT" || status === "LOW TRAFFIC") return "#fef3c7";
   if (status.startsWith("NO ") || status === "ERROR") return "#fee2e2";
   return "#f3f4f6";

@@ -501,8 +501,8 @@ async function fetchAndAnalyze(product: Product, store: StoreShape): Promise<Opp
   const forgeRegion = Number(settingValue(store, "The Forge region ID", "10000002"));
   const domainRegion = Number(settingValue(store, "Domain region ID", "10000043"));
   const [forgeOrders, domainOrders, forgeHistory, domainHistory] = await Promise.all([
-    fetchJson<any[]>(`${baseUrl}/markets/${forgeRegion}/orders/?datasource=tranquility&order_type=sell&type_id=${product.typeId}&page=1`),
-    fetchJson<any[]>(`${baseUrl}/markets/${domainRegion}/orders/?datasource=tranquility&order_type=sell&type_id=${product.typeId}&page=1`),
+    fetchJson<any[]>(`${baseUrl}/markets/${forgeRegion}/orders/?datasource=tranquility&order_type=all&type_id=${product.typeId}&page=1`),
+    fetchJson<any[]>(`${baseUrl}/markets/${domainRegion}/orders/?datasource=tranquility&order_type=all&type_id=${product.typeId}&page=1`),
     fetchJson<any[]>(`${baseUrl}/markets/${forgeRegion}/history/?datasource=tranquility&type_id=${product.typeId}`),
     fetchJson<any[]>(`${baseUrl}/markets/${domainRegion}/history/?datasource=tranquility&type_id=${product.typeId}`)
   ]);
@@ -518,6 +518,7 @@ async function fetchAndAnalyze(product: Product, store: StoreShape): Promise<Opp
     sellReferenceMinimumIskDepth: Number(settingValue(store, "Sell reference minimum ISK depth", "25000000")),
     shipCargoCapacityM3: Number(settingValue(store, "Ship cargo capacity m3", "7900")),
     suggestedBuyDestinationVolumePercent: Number(settingValue(store, "Suggested buy max destination 30d volume percent", "0.3")),
+    emptyDestinationMaxVolumePercent: Number(settingValue(store, "Empty destination max 30d volume percent", "0.15")),
     scoreTargetProfit: Number(settingValue(store, "Score target profit ISK", "100000000")),
     scoreProfitWeight: Number(settingValue(store, "Score profit weight", "50")),
     scoreSellThroughWeight: Number(settingValue(store, "Score sell-through weight", "40")),
@@ -530,6 +531,8 @@ async function fetchAndAnalyze(product: Product, store: StoreShape): Promise<Opp
     refreshedAt: new Date().toISOString(),
     forgeVolume: recentHistoryVolume(forgeHistory, config.historyDays),
     domainVolume: recentHistoryVolume(domainHistory, config.historyDays),
+    forgeHistoryAverage: recentHistoryAverage(forgeHistory, config.historyDays),
+    domainHistoryAverage: recentHistoryAverage(domainHistory, config.historyDays),
     forgeOrders: forgeOrders.map(toOrder),
     domainOrders: domainOrders.map(toOrder)
   });
@@ -558,6 +561,20 @@ function toOrder(row: any) {
 function recentHistoryVolume(rows: any[], days: number): number {
   const cutoff = Date.now() - days * 86400000;
   return rows.reduce((sum, row) => new Date(`${row.date}T00:00:00Z`).getTime() >= cutoff ? sum + Number(row.volume || 0) : sum, 0);
+}
+
+function recentHistoryAverage(rows: any[], days: number): number {
+  const cutoff = Date.now() - days * 86400000;
+  let units = 0;
+  let value = 0;
+  for (const row of rows) {
+    if (new Date(`${row.date}T00:00:00Z`).getTime() < cutoff) continue;
+    const volume = Number(row.volume || 0);
+    const average = Number(row.average || 0);
+    units += volume;
+    value += volume * average;
+  }
+  return units > 0 ? value / units : 0;
 }
 
 function upsertOpportunity(store: StoreShape, opportunity: Opportunity) {

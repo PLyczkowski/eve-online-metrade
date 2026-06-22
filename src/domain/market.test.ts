@@ -62,6 +62,27 @@ describe("analyzeOpportunity", () => {
     expect(row.status).toBe("NO AMARR SELL");
   });
 
+  it("creates empty destination opportunities from regional history demand", () => {
+    const row = analyzeOpportunity({
+      product: { ...product, volumeM3: 1 },
+      config: { ...defaultMarketConfig, minimumEstimatedProfit: 1, emptyDestinationMaxVolumePercent: 0.15 },
+      refreshedAt: "2026-06-17T12:00:00Z",
+      forgeOrders: [order(defaultMarketConfig.jitaStationId, 100, 1000)],
+      domainOrders: [order(123, 120, 500)],
+      forgeVolume: 1000,
+      domainVolume: 100,
+      domainHistoryAverage: 200
+    });
+
+    expect(row.status).toBe("EMPTY DEST");
+    expect(row.direction).toBe("Jita -> Amarr");
+    expect(row.sellReference).toBe(200);
+    expect(row.destinationLowestSell).toBeNull();
+    expect(row.destinationOrderCount).toBe(0);
+    expect(row.suggestedBuyQuantity).toBe(15);
+    expect(row.estimatedProfit).toBe(1500);
+  });
+
   it("marks low spread before low profit", () => {
     const row = analyzeOpportunity({
       product,

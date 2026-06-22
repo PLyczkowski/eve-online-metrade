@@ -4,6 +4,7 @@ export type Status =
   | "LOW SPREAD"
   | "LOW PROFIT"
   | "LOW TRAFFIC"
+  | "EMPTY DEST"
   | "NO SPREAD"
   | "NO SELL ORDERS"
   | "NO JITA SELL"
@@ -239,6 +240,7 @@ export interface Order {
 export interface MarketHistoryRow {
   date: string;
   volume: number;
+  average?: number;
 }
 
 export interface MarketConfig {
@@ -256,6 +258,7 @@ export interface MarketConfig {
   sellReferenceMinimumIskDepth: number;
   shipCargoCapacityM3: number;
   suggestedBuyDestinationVolumePercent: number;
+  emptyDestinationMaxVolumePercent: number;
   scoreTargetProfit: number;
   scoreProfitWeight: number;
   scoreSellThroughWeight: number;
@@ -268,6 +271,8 @@ export interface AnalyzeInput {
   domainOrders: Order[];
   forgeVolume: number;
   domainVolume: number;
+  forgeHistoryAverage?: number;
+  domainHistoryAverage?: number;
   refreshedAt: string;
   config: MarketConfig;
 }
