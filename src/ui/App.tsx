@@ -328,7 +328,7 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
+        <div className="topbar-title">
           <h1>EVE Metrade</h1>
           <p>Trade hub hauling opportunities from public ESI market data.</p>
         </div>

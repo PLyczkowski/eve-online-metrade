@@ -87,7 +87,7 @@ export function analyzeOpportunity(input: AnalyzeInput): Opportunity {
   const suggestedBuyQuantity = suggestedBuyUnits(sourceAvailable, cargoUnits, destinationVolumeUnits);
   const estimatedProfit = Math.max(0, suggestedBuyQuantity * profitPerUnit);
   const cargoUsedPercent = cargoUsedFraction(config.shipCargoCapacityM3, product.volumeM3 ?? null, suggestedBuyQuantity);
-  const score = opportunityScore(estimatedProfit, cargoUsedPercent, suggestedBuyQuantity, sellHub.volume, sellHub.orderCount, config);
+  const score = opportunityScore(estimatedProfit, cargoUsedPercent, suggestedBuyQuantity, buyHub.volume, sellHub.volume, sellHub.orderCount, config);
 
   let status: Opportunity["status"] = "GOOD";
   let scriptNotes = "Both prices are sell orders; direction is chosen from lower sell price to higher sell price.";
@@ -171,7 +171,7 @@ function emptyDestinationOpportunity(sourceHub: HubData, destinationHub: HubData
   const suggestedBuyQuantity = suggestedBuyUnits(sourceAvailable, cargoUnits, destinationVolumeUnits);
   const estimatedProfit = Math.max(0, suggestedBuyQuantity * profitPerUnit);
   const cargoUsedPercent = cargoUsedFraction(config.shipCargoCapacityM3, product.volumeM3 ?? null, suggestedBuyQuantity);
-  const score = opportunityScore(estimatedProfit, cargoUsedPercent, suggestedBuyQuantity, destinationHub.volume, 0, config);
+  const score = opportunityScore(estimatedProfit, cargoUsedPercent, suggestedBuyQuantity, sourceHub.volume, destinationHub.volume, 0, config);
   const status: Opportunity["status"] = estimatedProfit < config.minimumEstimatedProfit ? "LOW PROFIT" : "EMPTY DEST";
   return {
     status,
@@ -234,7 +234,7 @@ function cargoUsedFraction(cargoM3: number, volumeM3: number | null, estimatedUn
   return Math.min(1, Math.max(0, (estimatedUnits * volumeM3) / cargoM3));
 }
 
-function opportunityScore(estimatedProfit: number | null, cargoUsedPercent: number | null, suggestedBuyQuantity: number | null, sellRegionVolume: number | null, destinationOrderCount: number | null, config: MarketConfig): number | null {
+function opportunityScore(estimatedProfit: number | null, cargoUsedPercent: number | null, suggestedBuyQuantity: number | null, buyRegionVolume: number | null, sellRegionVolume: number | null, destinationOrderCount: number | null, config: MarketConfig): number | null {
   if (estimatedProfit === null) return null;
   if (estimatedProfit <= 0) return 0;
   const profitWeight = Math.max(0, config.scoreProfitWeight);
@@ -247,8 +247,12 @@ function opportunityScore(estimatedProfit: number | null, cargoUsedPercent: numb
   const velocityScore = suggestedBuyQuantity !== null && sellRegionVolume !== null && suggestedBuyQuantity > 0 && sellRegionVolume > 0
     ? Math.min(1, Math.max(0, 1 - Math.min(1, suggestedBuyQuantity / sellRegionVolume)))
     : 0;
+  const sourceVelocityScore = suggestedBuyQuantity !== null && buyRegionVolume !== null && suggestedBuyQuantity > 0 && buyRegionVolume > 0
+    ? Math.min(1, Math.max(0, 1 - Math.min(1, suggestedBuyQuantity / buyRegionVolume)))
+    : 0;
+  const demandScore = velocityScore * 0.67 + sourceVelocityScore * 0.33;
   const orderScore = destinationOrderScore(destinationOrderCount);
-  return ((profitScore * profitWeight + velocityScore * sellThroughWeight + cargoScore * cargoWeight + orderScore * destinationOrderWeight) / totalWeight) * 100;
+  return ((profitScore * profitWeight + demandScore * sellThroughWeight + cargoScore * cargoWeight + orderScore * destinationOrderWeight) / totalWeight) * 100;
 }
 
 function destinationOrderScore(count: number | null): number {

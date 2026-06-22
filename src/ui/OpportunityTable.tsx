@@ -63,7 +63,7 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
     { id: "myDestinationSellPrice", header: "My Dest Price", size: 140, cell: ({ row }) => formatPriceRange(row.original.myDestinationSellPriceMin, row.original.myDestinationSellPriceMax) },
     { accessorKey: "buyRegionVolume", header: "Buy 30d Vol", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "sellRegionVolume", header: "Sell 30d Vol", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
-    { accessorKey: "destinationOrderCount", header: "Dest Orders", size: 110, cell: ({ getValue }) => formatQuantity(getValue<number | null>()) },
+    { accessorKey: "destinationOrderCount", header: "Dest Orders", size: 110, cell: ({ row }) => formatQuantity(displayDestinationOrderCount(row.original)) },
     { accessorKey: "lastRefreshMinutes", header: "Last Refresh", size: 120, cell: ({ getValue }) => getValue<number | null>() === null ? "" : `${getValue<number>()} min ago` },
     { accessorKey: "notes", header: "My Notes", size: 180 }
   ], []);
@@ -323,7 +323,7 @@ function cellColor(columnId: string, row: Opportunity): CSSProperties {
   }
   if (columnId === "destinationOrderCount") {
     return {
-      backgroundColor: destinationOrdersScale(row.destinationOrderCount)
+      backgroundColor: destinationOrdersScale(displayDestinationOrderCount(row))
     };
   }
   if (columnId === "lastRefreshMinutes") return { backgroundColor: refreshScale(row.lastRefreshMinutes) };
@@ -338,6 +338,12 @@ function myDestinationPriceColor(row: Opportunity): CSSProperties {
   if (publicPrice === null) return {};
   const undercut = row.myDestinationSellPriceMin > publicPrice + 0.01;
   return { backgroundColor: undercut ? "#fde2e2" : "#dcfce7", fontWeight: 650 };
+}
+
+function displayDestinationOrderCount(row: Opportunity): number | null {
+  if (row.destinationOrderCount !== null) return row.destinationOrderCount;
+  if (row.status === "EMPTY DEST" || row.status === "NO AMARR SELL" || row.status === "NO JITA SELL") return 0;
+  return null;
 }
 
 function readSavedState<T>(key: string, fallback: T): T {

@@ -38,6 +38,7 @@ select {
   justify-content: space-between;
   gap: 20px;
   align-items: center;
+  min-width: 0;
   padding: 18px 22px;
   background: #101820;
   color: #f7fafc;
@@ -47,6 +48,10 @@ select {
 .topbar h1,
 .topbar p {
   margin: 0;
+}
+
+.topbar-title {
+  min-width: 0;
 }
 
 .topbar h1 {
@@ -65,6 +70,16 @@ select {
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.topbar-actions {
+  justify-content: flex-end;
+  max-width: min(760px, 62vw);
+  min-width: 0;
+}
+
+.topbar-actions .text-button {
+  white-space: nowrap;
 }
 
 .icon-button {
@@ -788,6 +803,11 @@ select,
   .topbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .topbar-actions {
+    max-width: none;
+    justify-content: flex-start;
   }
 
   .summary-band {

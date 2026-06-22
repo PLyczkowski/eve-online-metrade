@@ -1845,10 +1845,17 @@ fn opportunity_score(
         }
         _ => 0.0,
     };
+    let source_velocity_score = match (row.suggested_buy_quantity, row.buy_region_volume) {
+        (Some(suggested), Some(volume)) if suggested > 0.0 && volume > 0.0 => {
+            (1.0 - (suggested / volume).clamp(0.0, 1.0)).clamp(0.0, 1.0)
+        }
+        _ => 0.0,
+    };
+    let demand_score = (velocity_score * 0.67) + (source_velocity_score * 0.33);
     let destination_order_score = destination_order_score(row.destination_order_count);
     Some(
         ((profit_score * profit_weight)
-            + (velocity_score * sell_through_weight)
+            + (demand_score * sell_through_weight)
             + (cargo_score * cargo_weight)
             + (destination_order_score * destination_order_weight))
             / total_weight
@@ -4234,6 +4241,10 @@ fn empty_opportunity(
     refreshed: String,
     notes: &str,
 ) -> Opportunity {
+    let destination_order_count = match status {
+        "EMPTY DEST" | "NO AMARR SELL" | "NO JITA SELL" => Some(0),
+        _ => None,
+    };
     Opportunity {
         status: status.to_string(),
         direction: String::new(),
@@ -4251,7 +4262,7 @@ fn empty_opportunity(
         score: None,
         cargo_used_percent: None,
         suggested_buy_quantity: None,
-        destination_order_count: None,
+        destination_order_count,
         my_destination_sell_price_min: None,
         my_destination_sell_price_max: None,
         my_destination_sell_quantity: None,
