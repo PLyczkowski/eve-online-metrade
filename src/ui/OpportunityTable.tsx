@@ -63,7 +63,7 @@ export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNote
     { id: "myDestinationSellPrice", header: "My Dest Price", size: 140, cell: ({ row }) => formatPriceRange(row.original.myDestinationSellPriceMin, row.original.myDestinationSellPriceMax) },
     { accessorKey: "buyRegionVolume", header: "Buy 30d Vol", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
     { accessorKey: "sellRegionVolume", header: "Sell 30d Vol", size: 120, cell: ({ getValue }) => formatIsk(getValue<number | null>()) },
-    { accessorKey: "destinationOrderCount", header: "Dest Orders", size: 110, cell: ({ row }) => formatQuantity(displayDestinationOrderCount(row.original)) },
+    { accessorKey: "destinationOrderCount", header: "Dest Orders", size: 110, cell: ({ row }) => formatDestinationOrderCount(displayDestinationOrderCount(row.original)) },
     { accessorKey: "lastRefreshMinutes", header: "Last Refresh", size: 120, cell: ({ getValue }) => getValue<number | null>() === null ? "" : `${getValue<number>()} min ago` },
     { accessorKey: "notes", header: "My Notes", size: 180 }
   ], []);
@@ -392,6 +392,11 @@ function ColumnMenu({
 
 function formatQuantity(value: number | null): string {
   if (value === null || Number.isNaN(value) || value <= 0) return "";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatDestinationOrderCount(value: number | null): string {
+  if (value === null || Number.isNaN(value)) return "";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
 }
 

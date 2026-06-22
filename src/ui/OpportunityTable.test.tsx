@@ -118,4 +118,18 @@ describe("OpportunityTable", () => {
     expect(screen.getAllByText("Dest Orders").length).toBeGreaterThan(0);
     expect(screen.getAllByText("3").length).toBeGreaterThan(0);
   });
+
+  it("shows zero destination orders when empty destination was confirmed", () => {
+    render(
+      <OpportunityTable
+        rows={[{ ...row, status: "EMPTY DEST", destinationOrderCount: 0 }]}
+        onRefreshRow={vi.fn()}
+        onRefreshRows={vi.fn()}
+        onEditNotes={vi.fn()}
+        onDisableProduct={vi.fn()}
+      />
+    );
+
+    expect(screen.getAllByText("0").length).toBeGreaterThan(0);
+  });
 });
