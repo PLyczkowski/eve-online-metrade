@@ -409,6 +409,7 @@ pub fn run() {
             get_refresh_status,
             discover_hot_products,
             start_refresh_next_batch,
+            start_auto_refresh_next_batch,
             start_reset_and_refresh,
             start_refresh_product,
             refresh_next_batch,
@@ -872,6 +873,11 @@ fn start_refresh_next_batch(state: State<AppState>) -> Result<RefreshJob, String
 }
 
 #[tauri::command]
+fn start_auto_refresh_next_batch(state: State<AppState>) -> Result<RefreshJob, String> {
+    start_refresh_job(state, "auto_batch".to_string(), None, false)
+}
+
+#[tauri::command]
 fn start_reset_and_refresh(state: State<AppState>) -> Result<RefreshJob, String> {
     start_refresh_job(state, "reset".to_string(), None, true)
 }
@@ -953,8 +959,10 @@ fn run_refresh_job(
             type_id.ok_or_else(|| "Missing product type ID".to_string())?,
         )
         .and_then(|_| latest_refresh_run(&conn))
+    } else if kind == "auto_batch" {
+        refresh_next_batch_inner_with_job(&conn, reset, true)
     } else {
-        refresh_next_batch_inner_with_job(&conn, reset)
+        refresh_next_batch_inner_with_job(&conn, reset, false)
     };
     match result {
         Ok(run) => {
@@ -1005,10 +1013,14 @@ fn refresh_product_inner(conn: &Connection, type_id: i64) -> Result<Opportunity,
 }
 
 fn refresh_next_batch_inner(conn: &Connection) -> Result<RefreshRun, String> {
-    refresh_next_batch_inner_with_job(conn, false)
+    refresh_next_batch_inner_with_job(conn, false, false)
 }
 
-fn refresh_next_batch_inner_with_job(conn: &Connection, reset: bool) -> Result<RefreshRun, String> {
+fn refresh_next_batch_inner_with_job(
+    conn: &Connection,
+    reset: bool,
+    automatic: bool,
+) -> Result<RefreshRun, String> {
     let start = Utc::now();
     if reset {
         conn.execute("insert into app_state(key, value) values ('cursor', '0') on conflict(key) do update set value = '0'", []).map_err(to_string)?;
@@ -1024,7 +1036,15 @@ fn refresh_next_batch_inner_with_job(conn: &Connection, reset: bool) -> Result<R
         .parse::<f64>()
         .unwrap_or(0.0);
     let auto_disable_cold = setting(conn, "Auto-disable cold items", "TRUE") != "FALSE";
-    let products = enabled_products(conn)?;
+    let min_refresh_age_minutes = setting(conn, "Auto refresh minimum last refresh minutes", "5")
+        .parse::<f64>()
+        .unwrap_or(5.0)
+        .max(0.0);
+    let products = if automatic {
+        enabled_products_with_min_refresh_age(conn, min_refresh_age_minutes)?
+    } else {
+        enabled_products(conn)?
+    };
     let selected: Vec<Product> = products.iter().take(max_items).cloned().collect();
     update_refresh_job_progress(conn, "", 0, selected.len() as i64, 0, "")?;
     let mut errors = Vec::new();
@@ -1099,9 +1119,14 @@ fn refresh_next_batch_inner_with_job(conn: &Connection, reset: bool) -> Result<R
 
     set_app_state(conn, "cursor", "0".to_string())?;
     let skipped = format!(
-        "Priority refresh selected {} of {}; high estimated profit and stale rows run first{}",
+        "Priority refresh selected {} of {}; high estimated profit and stale rows run first{}{}",
         selected.len(),
         products.len(),
+        if automatic {
+            format!("; minimum age: {} minutes", min_refresh_age_minutes)
+        } else {
+            String::new()
+        },
         if skipped_low_volume > 0 {
             format!("; skipped low target volume: {}", skipped_low_volume)
         } else {
@@ -2070,6 +2095,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
     conn.execute(
+        "insert into settings(key, value, notes) values ('Auto refresh minimum last refresh minutes', '5', 'Automatic refresh skips products refreshed more recently than this.')
+         on conflict(key) do nothing",
+        [],
+    )?;
+    conn.execute(
         "insert into settings(key, value, notes) values ('ESI low error-limit threshold', '20', 'When ESI reports this many or fewer errors left, the app waits for reset.')
          on conflict(key) do nothing",
         [],
@@ -2294,6 +2324,11 @@ fn seed(conn: &Connection) -> rusqlite::Result<()> {
             "Automatic refresh interval seconds",
             "600",
             "Runs one batch every 10 minutes; keep this at 60 or higher for ESI safety.",
+        ),
+        (
+            "Auto refresh minimum last refresh minutes",
+            "5",
+            "Automatic refresh skips products refreshed more recently than this.",
         ),
         (
             "ESI low error-limit threshold",
@@ -4073,12 +4108,50 @@ fn enabled_products(conn: &Connection) -> Result<Vec<Product>, String> {
          order by
            case when o.last_refresh is null then 1 else 0 end desc,
            coalesce(o.estimated_profit, 0) * max(1.0, coalesce((julianday('now') - julianday(o.last_refresh)) * 24.0, 24.0)) desc,
+           coalesce(o.estimated_profit, 0) desc,
            coalesce(c.score, 0) desc,
            p.rowid",
         )
         .map_err(to_string)?;
     let result = rows(
         stmt.query_map([], |row| {
+            Ok(Product {
+                type_id: row.get(0)?,
+                name: row.get(1)?,
+                enabled: true,
+                notes: row.get(3)?,
+            })
+        })
+        .map_err(to_string)?,
+    )?;
+    Ok(result)
+}
+
+fn enabled_products_with_min_refresh_age(
+    conn: &Connection,
+    min_minutes: f64,
+) -> Result<Vec<Product>, String> {
+    let mut stmt = conn
+        .prepare(
+            "select p.type_id, p.name, p.enabled, p.notes
+         from products p
+         left join candidate_products c on c.type_id = p.type_id
+         left join opportunities o on o.type_id = p.type_id
+         where p.enabled = 1
+           and (
+             o.last_refresh is null
+             or ((julianday('now') - julianday(o.last_refresh)) * 24.0 * 60.0) >= ?1
+           )
+         order by
+           case when o.last_refresh is null then 1 else 0 end desc,
+           coalesce(o.estimated_profit, 0) * max(1.0, coalesce((julianday('now') - julianday(o.last_refresh)) * 24.0, 24.0)) desc,
+           coalesce(o.estimated_profit, 0) desc,
+           coalesce(c.score, 0) desc,
+           p.rowid",
+        )
+        .map_err(to_string)?;
+    let result = rows(
+        stmt.query_map(params![min_minutes], |row| {
             Ok(Product {
                 type_id: row.get(0)?,
                 name: row.get(1)?,

@@ -27,7 +27,7 @@ interface Props {
 }
 
 export function OpportunityTable({ rows, onRefreshRow, onRefreshRows, onEditNotes, onDisableProduct }: Props) {
-  const [sorting, setSorting] = useState<SortingState>([{ id: "estimatedProfit", desc: true }]);
+  const [sorting, setSorting] = useState<SortingState>([{ id: "score", desc: true }]);
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(() => readSavedState(columnSizingStorageKey, {}));
   const [columnOrder, setColumnOrder] = useState<ColumnOrderState>(() => readSavedState(columnOrderStorageKey, []));
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => readSavedState(columnVisibilityStorageKey, {}));

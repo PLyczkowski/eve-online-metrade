@@ -145,7 +145,7 @@ export function App() {
     if (!automaticEnabled) return;
     const timer = window.setInterval(() => {
       if (busyRef.current || refreshRunning) return;
-      startRefreshJob("Automatic refresh", api.startRefreshNextBatch);
+      startRefreshJob("Automatic refresh", api.startAutoRefreshNextBatch);
     }, automaticIntervalSeconds * 1000);
     return () => window.clearInterval(timer);
   }, [automaticEnabled, automaticIntervalSeconds, refreshRunning]);

@@ -25,6 +25,7 @@ type Command =
   | "get_refresh_status"
   | "discover_hot_products"
   | "start_refresh_next_batch"
+  | "start_auto_refresh_next_batch"
   | "start_reset_and_refresh"
   | "start_refresh_product"
   | "refresh_next_batch"
@@ -131,6 +132,9 @@ export const api = {
   startRefreshNextBatch() {
     return call<RefreshJob>("start_refresh_next_batch");
   },
+  startAutoRefreshNextBatch() {
+    return call<RefreshJob>("start_auto_refresh_next_batch");
+  },
   startResetAndRefresh() {
     return call<RefreshJob>("start_reset_and_refresh");
   },
@@ -197,11 +201,12 @@ async function fallbackCommand<T>(command: Command, args?: Record<string, unknow
   if (command === "set_trade_hub_enabled") return setTradeHubEnabled(store, Number(args?.id), Boolean(args?.enabled)) as T;
   if (command === "set_product_enabled") return setProductEnabled(store, Number(args?.typeId), Boolean(args?.enabled)) as T;
   if (command === "refresh_product") return refreshOneFallback(store, Number(args?.typeId)) as T;
-  if (command === "refresh_next_batch") return refreshBatchFallback(store, false) as T;
-  if (command === "reset_and_refresh") return refreshBatchFallback(store, true) as T;
+  if (command === "refresh_next_batch") return refreshBatchFallback(store, false, false) as T;
+  if (command === "reset_and_refresh") return refreshBatchFallback(store, true, false) as T;
   if (command === "start_refresh_product") return startFallbackJob(store, "product", () => refreshOneFallback(store, Number(args?.typeId))) as T;
-  if (command === "start_refresh_next_batch") return startFallbackJob(store, "batch", () => refreshBatchFallback(store, false)) as T;
-  if (command === "start_reset_and_refresh") return startFallbackJob(store, "reset", () => refreshBatchFallback(store, true)) as T;
+  if (command === "start_refresh_next_batch") return startFallbackJob(store, "batch", () => refreshBatchFallback(store, false, false)) as T;
+  if (command === "start_auto_refresh_next_batch") return startFallbackJob(store, "auto_batch", () => refreshBatchFallback(store, false, true)) as T;
+  if (command === "start_reset_and_refresh") return startFallbackJob(store, "reset", () => refreshBatchFallback(store, true, false)) as T;
   throw new Error(`Unknown command: ${command}`);
 }
 
@@ -452,10 +457,17 @@ async function refreshOneFallback(store: StoreShape, typeId: number): Promise<Op
   return opportunity;
 }
 
-async function refreshBatchFallback(store: StoreShape, reset: boolean): Promise<RefreshRun> {
+async function refreshBatchFallback(store: StoreShape, reset: boolean, automatic: boolean): Promise<RefreshRun> {
   if (reset) store.cursor = 0;
   const maxItems = Number(settingValue(store, "Max items per refresh", "5"));
-  const enabled = store.products.filter((product) => product.enabled);
+  const minRefreshAgeMinutes = Math.max(0, Number(settingValue(store, "Auto refresh minimum last refresh minutes", "5")) || 5);
+  const enabled = store.products.filter((product) => {
+    if (!product.enabled) return false;
+    if (!automatic) return true;
+    const old = store.opportunities.find((row) => row.typeId === product.typeId);
+    if (!old?.lastRefresh) return true;
+    return (Date.now() - new Date(old.lastRefresh).getTime()) / 60000 >= minRefreshAgeMinutes;
+  });
   const selected = enabled.slice(store.cursor, store.cursor + maxItems);
   const started = Date.now();
   let errors = "";
@@ -488,7 +500,7 @@ async function refreshBatchFallback(store: StoreShape, reset: boolean): Promise<
     opportunitiesWritten: written,
     apiCalls: selected.length * 4,
     errors: errors.trim(),
-    skipped: `${complete ? "Complete" : `Next starts at item ${store.cursor + 1} of ${enabled.length}`}${skipped ? `; skipped low target volume: ${skipped}` : ""}`,
+    skipped: `${complete ? "Complete" : `Next starts at item ${store.cursor + 1} of ${enabled.length}`}${automatic ? `; minimum age: ${minRefreshAgeMinutes} minutes` : ""}${skipped ? `; skipped low target volume: ${skipped}` : ""}`,
     durationSeconds: Math.round((Date.now() - started) / 1000)
   };
   store.refreshRuns.push(run);

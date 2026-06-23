@@ -18,6 +18,7 @@ export const seedSettings: Setting[] = [
   ["User agent", "EVE Metrade local app", "Public ESI user agent"],
   ["Automatic refresh enabled", "TRUE", "Controls background refresh"],
   ["Automatic refresh interval seconds", "600", "Runs one batch every 10 minutes; keep this at 60 or higher for ESI safety."],
+  ["Auto refresh minimum last refresh minutes", "5", "Automatic refresh skips products refreshed more recently than this."],
   ["ESI low error-limit threshold", "20", "When ESI reports this many or fewer errors left, the app waits for reset."],
   ["Estimated safe ESI calls per hour", "1200", "UI budget for the API burn-rate indicator."],
   ["Auto-disable cold items", "TRUE", "After ESI validation, cold/low-traffic items are disabled to avoid future calls."],
